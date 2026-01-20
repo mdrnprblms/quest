@@ -66,15 +66,22 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 document.body.appendChild(renderer.domElement);
 
-// --- 3. LIGHTING ---
-const hemiLight = new THREE.HemisphereLight(0x2a2a35, 0x080820, 0.8);
+// --- 3. LIGHTING (BRIGHT NIGHT CITY) ---
+// 1. Hemisphere Light: The main "Street Light" simulator.
+// Sky (Deep Blue) -> Ground (Bright Concrete Grey). 
+// Intensity 2.5 makes the floor and buildings clearly visible.
+const hemiLight = new THREE.HemisphereLight(0x333366, 0x404040, 2.5);
 scene.add(hemiLight);
 
-const ambientLight = new THREE.AmbientLight(0x404080, 0.5); 
+// 2. Ambient Light: The base visibility layer.
+// Increased to 1.5 so shadows are never fully black.
+const ambientLight = new THREE.AmbientLight(0xccccff, 1.5); 
 scene.add(ambientLight);
 
-const dirLight = new THREE.DirectionalLight(0xcceeff, 1.5); 
-dirLight.position.set(50, 100, 50); 
+// 3. Directional Light: The Moon (Casts the shadows)
+// We kept the shadows enabled but balanced the light so it's not blinding.
+const dirLight = new THREE.DirectionalLight(0xaaccff, 1.2); 
+dirLight.position.set(50, 200, 50); 
 dirLight.castShadow = true;
 dirLight.shadow.mapSize.width = 4096; 
 dirLight.shadow.mapSize.height = 4096;
@@ -121,6 +128,15 @@ scene.add(cityGroup);
 
 const playerGroup = new THREE.Group();
 scene.add(playerGroup);
+
+// --- PLAYER FILL LIGHT ---
+// A soft light attached to the player so they are never pitch black
+// 0xffffff = White light
+// 1.5 = Intensity
+// 10 = Distance limit (so it doesn't light up distant buildings)
+const playerFillLight = new THREE.PointLight(0xffffff, 1.5, 10);
+playerFillLight.position.set(0, 2, 2); // 2m up, 2m forward
+playerGroup.add(playerFillLight);
 
 const beaconGroup = new THREE.Group();
 scene.add(beaconGroup);
@@ -219,25 +235,36 @@ let currentAction;
 
 loader.load('playermodel.glb', (gltf) => {
     playerMesh = gltf.scene;
-    playerMesh.scale.set(1.0, 1.0, 1.0); 
-    playerMesh.rotation.y = Math.PI; // Face forward
+    playerMesh.scale.set(2.0, 2.0, 2.0); 
+    playerMesh.rotation.y = Math.PI; 
     
     playerMesh.traverse(o => { 
         if (o.isMesh) { 
             o.castShadow = true; 
             o.receiveShadow = true;
+            
+            // --- MATERIAL FIX ---
+            if (o.material) {
+                // 1. Turn off "Mirror Mode" so it actually shows its texture
+                o.material.metalness = 0.0; 
+                o.material.roughness = 0.8; 
+                
+                // 2. Ensure the base color is white (so it doesn't darken the texture)
+                if (o.material.color) o.material.color.set(0xffffff);
+                
+                // 3. (Optional) Add a tiny bit of "Inner Glow" if it's still too dark
+                // o.material.emissive = new THREE.Color(0x222222); 
+            }
         } 
     });
 
     playerGroup.add(playerMesh);
     
-    // ANIMATION MAPPING
+    // ANIMATIONS
     mixer = new THREE.AnimationMixer(playerMesh);
     const clips = gltf.animations;
-    
     console.log("Available Animations:", clips.map(c => c.name));
 
-    // EXACT NAME MAPPING
     const idleClip = THREE.AnimationClip.findByName(clips, 'Idle');
     const runClip = THREE.AnimationClip.findByName(clips, 'Run');
     const jumpClip = THREE.AnimationClip.findByName(clips, 'Jump');
@@ -248,18 +275,32 @@ loader.load('playermodel.glb', (gltf) => {
     if (jumpClip) animationsMap.set('Jump', mixer.clipAction(jumpClip));
     if (punchClip) animationsMap.set('Punch', mixer.clipAction(punchClip));
     
-    // Start Idle
     currentAction = animationsMap.get('Idle');
     if (currentAction) currentAction.play();
 
 }, undefined, (err) => console.error("Player Model Error:", err));
 
-
-// --- LOAD LIME BIKE (SCALE 5) ---
+// --- LOAD LIME BIKE (FIXED LIGHTING) ---
 loader.load('limebike.glb', (gltf) => {
     bikeTemplate = gltf.scene;
-    bikeTemplate.scale.set(5.0, 5.0, 5.0);
-    bikeTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
+    bikeTemplate.scale.set(2.5, 2.5, 2.5);
+    
+    bikeTemplate.traverse(o => { 
+        if(o.isMesh) { 
+            o.castShadow = true; 
+            o.receiveShadow = true;
+            
+            // --- MATERIAL FIX ---
+            if (o.material) {
+                // Remove the "Dark Mirror" effect
+                o.material.metalness = 0.0; 
+                o.material.roughness = 0.6; // Slightly shiny (like bike paint)
+                
+                // Reset color to pure white so the texture shows through
+                if (o.material.color) o.material.color.set(0xffffff);
+            }
+        }
+    });
     console.log("Lime Bike Loaded!");
 }, undefined, (err) => console.error("Bike Load Error:", err));
 
@@ -267,7 +308,7 @@ loader.load('limebike.glb', (gltf) => {
 // --- LOAD MONSTER ENERGY (SCALE 2) ---
 loader.load('monster_zero_ultra.glb', (gltf) => {
     drinkTemplate = gltf.scene;
-    drinkTemplate.scale.set(2.0, 2.0, 2.0);
+    drinkTemplate.scale.set(0.6, 0.6, 0.6);
     drinkTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
     console.log("Monster Energy Loaded!");
 }, undefined, (err) => console.error("Drink Load Error:", err));
@@ -295,8 +336,9 @@ function canMove(position, direction) {
     return true; 
 }
 
+// HELPER: Find a valid ground spot using raycasting
 function getAnywhereSpawnPoint(centerPos, minRadius, maxRadius) {
-    for (let i = 0; i < 15; i++) { 
+    for (let i = 0; i < 20; i++) { // Increased tries to 20 to ensure we find a spot
         let radius = minRadius + Math.random() * (maxRadius - minRadius);
         let angle = Math.random() * Math.PI * 2;
         
@@ -306,21 +348,27 @@ function getAnywhereSpawnPoint(centerPos, minRadius, maxRadius) {
         let testX = baseX + Math.cos(angle) * radius;
         let testZ = baseZ + Math.sin(angle) * radius;
         
+        // Quick boundary check
         if (Math.abs(testX) > MAP_LIMIT || Math.abs(testZ) > MAP_LIMIT) continue;
 
+        // RAYCAST CHECK
         raycaster.set(new THREE.Vector3(testX, 100, testZ), downVector);
+        
+        // STRICT CHECK: We must hit the cityGroup (the 3D model)
         const intersects = raycaster.intersectObjects(cityGroup.children, true);
         
         if (intersects.length > 0) {
             const y = intersects[0].point.y;
+            // < 2.0 means ground/pavement. > 2.0 means roof.
             if (y < 2.0) {
                 return new THREE.Vector3(testX, 0.5, testZ);
             }
-        } else {
-            return new THREE.Vector3(testX, 0.5, testZ);
-        }
+        } 
+        
+        // PREVIOUSLY: We had an 'else' here that allowed spawning in the void.
+        // NOW: We do nothing. If we hit nothing, we loop again.
     }
-    return null; 
+    return null; // Failed to find a valid spot on the mesh
 }
 
 function spawnBeacon() {

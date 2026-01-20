@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mdrn Quest - Alpha</title>
+    <style>
+        @font-face { font-family: 'Medieval'; src: url('./blackletter.ttf'); }
+
+        body { margin: 0; overflow: hidden; background-color: #111; }
+        canvas { display: block; }
+
+        #ui-container {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            user-select: none;
+            pointer-events: none;
+            text-shadow: 4px 4px 0px #000;
+            z-index: 100;
+        }
+
+        h1 {
+            font-family: 'Medieval', serif;
+            margin: 0;
+            font-size: 60px; 
+            line-height: 0.8;
+            font-weight: normal;
+            letter-spacing: 2px;
+        }
+
+        p.score-text {
+            font-family: 'Medieval', serif;
+            font-size: 30px;
+            margin: 10px 0;
+        }
+
+        p.instructions {
+            font-family: 'Helvetica', 'Arial', sans-serif;
+            font-size: 18px; 
+            font-weight: bold;
+            opacity: 0.8;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            text-shadow: 2px 2px 0px #000;
+        }
+
+        .highlight { color: #ffff00; }
+        .danger { color: #ff3333; }
+
+        /* PAUSE SCREEN */
+        #pause-screen {
+            display: none; /* Hidden by default */
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-family: 'Medieval', serif;
+            font-size: 100px;
+            color: white;
+            text-shadow: 5px 5px 0px #000;
+            z-index: 200;
+        }
+
+        #game-over {
+            display: none; 
+            font-family: 'Medieval', serif; 
+            font-size: 80px; 
+            color: #ff3333; 
+            margin-top: 20px;
+            text-shadow: 4px 4px 0px #000;
+        }
+    </style>
+</head>
+<body>
+    
+    <div id="ui-container">
+        <h1>Mdrn Quest</h1>
+        <p class="score-text">Deliveries: <span id="score" class="highlight">0</span></p>
+        
+        <p class="instructions">
+            Deliver a pack to the green beacon<br>
+            <span style="font-size: 14px; opacity: 0.6;">Time Left: <span id="timer" class="highlight">60.0</span>s</span>
+        </p>
+
+        <div id="status-panel" style="margin-top: 10px; font-family: 'Helvetica', sans-serif; font-size: 16px; font-weight: bold;">
+            <div id="status-bike" style="color: #32CD32; display: none; text-shadow: 2px 2px 0px #000;">
+                [ LIME BIKE ACTIVE ]
+            </div>
+            <div id="status-drink" style="color: #00FFFF; display: none; text-shadow: 2px 2px 0px #000;">
+                ENERGY: <span id="drink-timer">0.0</span>s
+            </div>
+        </div>
+        
+        <p class="instructions" style="font-size: 14px; margin-top: 20px; opacity: 0.6;">
+            [M] MAP &nbsp; [P] PAUSE
+        </p>
+
+        <div id="game-over">SHIFT ENDED</div>
+    </div>
+<div style="position: absolute; top: 10px; right: 10px; z-index: 100;">
+    <button onclick="window.debugSpawn('bike')">Spawn Bike</button>
+    <button onclick="window.debugSpawn('drink')">Spawn Drink</button>
+</div>
+    <div id="pause-screen">PAUSED</div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script type="module" src="./game.js"></script>
+</body>
+</html>

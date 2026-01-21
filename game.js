@@ -756,7 +756,4 @@ window.debugSpawn = (forcedType) => {
     }
     createPowerupGroup(forcedType, pos);
     console.log("Debug Spawn:", forcedType);
-
 };
-
-//Force Rebuild

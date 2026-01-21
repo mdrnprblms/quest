@@ -2,33 +2,54 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 // ... existing imports ...
 
-// --- JOYSTICK SETUP ---
+// --- MOBILE CONTROLS SETUP ---
 let joystickManager;
-let joystickInput = { x: 0, y: 0 }; // Stores forward/turn values
+let joystickInput = { x: 0, y: 0 };
 
-// Only init if nipplejs is loaded (failsafe)
+// 1. SETUP JOYSTICK (Nipple.js)
 if (typeof nipplejs !== 'undefined') {
-    const zone = document.getElementById('zone_joystick');
-    joystickManager = nipplejs.create({
-        zone: zone,
-        mode: 'static',
-        position: { left: '50%', top: '50%' },
-        color: 'white'
-    });
+    // We wait 500ms to ensure DOM is ready, just in case
+    setTimeout(() => {
+        const zone = document.getElementById('zone_joystick');
+        if (zone) {
+            joystickManager = nipplejs.create({
+                zone: zone,
+                mode: 'static',
+                position: { left: '50%', top: '50%' },
+                color: 'white',
+                size: 100
+            });
 
-    joystickManager.on('move', function (evt, data) {
-        // data.vector is normalized (roughly -1 to 1)
-        // y is up/down (Move), x is left/right (Turn)
-        if (data.vector) {
-            joystickInput.y = data.vector.y; 
-            joystickInput.x = data.vector.x; 
+            joystickManager.on('move', function (evt, data) {
+                if (data.vector) {
+                    joystickInput.y = data.vector.y; 
+                    joystickInput.x = data.vector.x; 
+                }
+            });
+
+            joystickManager.on('end', function (evt) {
+                joystickInput.x = 0;
+                joystickInput.y = 0;
+            });
         }
-    });
+        
+        // 2. SETUP JUMP BUTTON (Direct Link)
+        const jumpBtn = document.getElementById('mobile-jump');
+        if (jumpBtn) {
+            // Touch Start: Press Space
+            jumpBtn.addEventListener('touchstart', (e) => {
+                e.preventDefault(); // Stop blue highlight
+                keys.space = true;
+            }, { passive: false });
 
-    joystickManager.on('end', function (evt) {
-        joystickInput.x = 0;
-        joystickInput.y = 0;
-    });
+            // Touch End: Release Space
+            jumpBtn.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                keys.space = false;
+                jumpLocked = false; // Allow next jump
+            }, { passive: false });
+        }
+    }, 500);
 }
 
 // --- 1. CONFIGURATION ---

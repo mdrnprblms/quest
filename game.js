@@ -6,8 +6,8 @@ const START_TIME = 90.0;
 const TIME_BONUS = 30.0;    
 
 // SPEED TUNING
-const BASE_SPEED = 20.0;     
-const BIKE_MULTIPLIER = 1.8; 
+const BASE_SPEED = 20.0;     // Increased for faster gameplay
+const BIKE_MULTIPLIER = 1.8; // Reduced slightly so you don't fly off map
 const DRINK_MULTIPLIER = 1.4; 
 const DRINK_DURATION = 15.0;
 const POWERUP_SPAWN_RATE = 5.0; 
@@ -30,6 +30,7 @@ let spawnTimer = 0;
 let verticalVelocity = 0;
 let isGrounded = true;
 let jumpLocked = false;
+// Increased Gravity/Jump to match the faster running speed
 const GRAVITY = -60.0; 
 const JUMP_FORCE = 30.0;    
 
@@ -68,75 +69,6 @@ function updateUI() {
     if(uiGameOver && !gameActive) uiGameOver.style.display = "block";
 }
 
-// --- NEW: MOBILE CONTROLS INJECTOR ---
-function createMobileControls() {
-    // Inject CSS for buttons
-    const style = document.createElement('style');
-    style.innerHTML = `
-        .mobile-btn {
-            position: fixed; z-index: 999;
-            background: rgba(255, 255, 255, 0.2);
-            border: 2px solid rgba(255, 255, 255, 0.5);
-            border-radius: 50%; color: white;
-            display: flex; justify-content: center; align-items: center;
-            font-size: 24px; user-select: none; touch-action: none;
-            width: 60px; height: 60px;
-        }
-        .mobile-btn:active { background: rgba(255, 255, 255, 0.5); }
-        #dpad-container { position: fixed; bottom: 30px; left: 30px; width: 180px; height: 180px; z-index: 999; }
-        #btn-up { position: absolute; top: 0; left: 60px; }
-        #btn-down { position: absolute; bottom: 0; left: 60px; }
-        #btn-left { position: absolute; top: 60px; left: 0; }
-        #btn-right { position: absolute; top: 60px; right: 0; }
-        #btn-jump { position: fixed; bottom: 50px; right: 40px; width: 90px; height: 90px; background: rgba(0, 255, 0, 0.3); font-weight: bold; }
-    `;
-    document.head.appendChild(style);
-
-    // Create Elements
-    const dpad = document.createElement('div');
-    dpad.id = 'dpad-container';
-    dpad.innerHTML = `
-        <div id="btn-up" class="mobile-btn">W</div>
-        <div id="btn-down" class="mobile-btn">S</div>
-        <div id="btn-left" class="mobile-btn">A</div>
-        <div id="btn-right" class="mobile-btn">D</div>
-    `;
-    document.body.appendChild(dpad);
-
-    const jumpBtn = document.createElement('div');
-    jumpBtn.id = 'btn-jump';
-    jumpBtn.className = 'mobile-btn';
-    jumpBtn.innerText = 'JUMP';
-    document.body.appendChild(jumpBtn);
-
-    // Helper to bind events
-    function bindKey(id, keyName) {
-        const el = document.getElementById(id);
-        el.addEventListener('pointerdown', (e) => {
-            e.preventDefault();
-            keys[keyName] = true;
-            // Special Jump Lock logic reset
-            if (keyName === 'space') { keys.space = true; } 
-        });
-        el.addEventListener('pointerup', (e) => {
-            e.preventDefault();
-            keys[keyName] = false;
-            if (keyName === 'space') { keys.space = false; jumpLocked = false; }
-        });
-        el.addEventListener('pointerleave', (e) => {
-            e.preventDefault();
-            keys[keyName] = false;
-            if (keyName === 'space') { keys.space = false; jumpLocked = false; }
-        });
-    }
-
-    bindKey('btn-up', 'w');
-    bindKey('btn-down', 's');
-    bindKey('btn-left', 'a');
-    bindKey('btn-right', 'd');
-    bindKey('btn-jump', 'space');
-}
-
 // --- 2. SCENE ---
 const scene = new THREE.Scene();
 
@@ -153,9 +85,6 @@ renderer.useLegacyLights = false;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 document.body.appendChild(renderer.domElement);
-
-// Call Mobile Controls
-createMobileControls();
 
 // --- 3. LIGHTING ---
 const hemiLight = new THREE.HemisphereLight(0x333366, 0x404040, 2.5);
@@ -242,7 +171,7 @@ arrowMesh.geometry.rotateX(Math.PI / 2);
 arrowMesh.position.y = 6; 
 playerGroup.add(arrowMesh);
 
-// MAP LOADER - CHECK THIS FILENAME
+// MAP LOADER
 loader.load('shoreditch.glb', (gltf) => {
     const map = gltf.scene;
     map.scale.set(3, 3, 3);
@@ -298,17 +227,25 @@ loader.load('shoreditch.glb', (gltf) => {
     });
     
     cityGroup.add(map);
-
-    // FIXED SPAWN LOGIC
+    
+  // ... inside loader.load, after cityGroup.add(map) ...
+    
+    // FIX: Force update matrices so raycaster sees the new mesh immediately
     cityGroup.updateMatrixWorld(true);
+
+    // Try to find a spawn point
     let startPos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, 100);
+    
+    // If getting close failed, try a wider search
     if (!startPos) startPos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 100, 500);
 
     if (startPos) {
         playerGroup.position.copy(startPos);
+        // FIX: Drop from the sky (add height) to let gravity settle the player naturally
         playerGroup.position.y += 5.0; 
-        verticalVelocity = 0; 
+        verticalVelocity = 0; // Reset velocity
     } else {
+        // Absolute emergency fallback
         console.error("Could not find spawn point, defaulting to 0,20,0");
         playerGroup.position.set(0, 20, 0); 
     }
@@ -444,17 +381,20 @@ function getAnywhereSpawnPoint(centerPos, minRadius, maxRadius) {
         
         if (Math.abs(testX) > MAP_LIMIT || Math.abs(testZ) > MAP_LIMIT) continue;
 
-        // Start higher for better detection
+        // FIX: Start raycast from much higher (300) to clear tall buildings
         raycaster.set(new THREE.Vector3(testX, 300, testZ), downVector);
         const intersects = raycaster.intersectObjects(colliderMeshes, false);
         
         if (intersects.length > 0) {
             const hit = intersects[0];
+            // Allow a wider range of heights
             if (hit.point.y > -20 && hit.point.y < 50) {
+                // Return point slightly above floor (+2.0) to prevent clipping
                 return new THREE.Vector3(testX, hit.point.y + 2.0, testZ);
             }
         } 
     }
+    // Return NULL if we failed, so the caller knows to try again
     return null; 
 }
 
@@ -486,6 +426,7 @@ function spawnPowerup() {
     createPowerupGroup(type, pos);
 }
 
+// Helper to avoid duplicate code in Spawn and Debug
 function createPowerupGroup(type, pos) {
     const group = new THREE.Group();
     group.position.copy(pos);
@@ -734,16 +675,20 @@ function animate() {
                 }
             }
             
-            // SMART RESPAWN
+            // NEW CODE: Smart Respawn
             if (playerGroup.position.y < -50) {
                 console.log("Player fell out of world. Respawning...");
+                
+                // Try to find a safe spot near 0,0
                 let safeSpot = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, 200);
+                
                 if (safeSpot) {
                     playerGroup.position.copy(safeSpot);
-                    playerGroup.position.y += 5.0; 
+                    playerGroup.position.y += 5.0; // Drop in
                 } else {
-                    playerGroup.position.set(0, 20, 0); 
+                    playerGroup.position.set(0, 20, 0); // Emergency float
                 }
+                
                 verticalVelocity = 0;
                 isGrounded = false;
             }
@@ -796,10 +741,13 @@ window.addEventListener('resize', () => {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 });
 
+// DEBUG SPAWN REPAIRED
 window.debugSpawn = (forcedType) => {
+    // FIX: Un-focus the button so Spacebar doesn't trigger it again
     if (document.activeElement) {
         document.activeElement.blur();
     }
+
     const playerPos = playerGroup.position;
     const pos = getAnywhereSpawnPoint(playerPos, 5, 20);
     if (!pos) {

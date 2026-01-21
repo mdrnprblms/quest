@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>High Street Runner</title>
     <style>
         body { 
@@ -11,14 +11,16 @@
             background-color: #000;
             font-family: 'Courier New', Courier, monospace;
             
-            /* --- MOBILE SELECTION FIX --- */
-            -webkit-touch-callout: none; /* iOS Safari */
-            -webkit-user-select: none; /* Safari */
-            -khtml-user-select: none; /* Konqueror HTML */
-            -moz-user-select: none; /* Old Firefox */
-            -ms-user-select: none; /* Internet Explorer/Edge */
-            user-select: none; /* Non-prefixed version, currently supported by Chrome, Opera and Firefox */
-            touch-action: none; /* Disables browser handling of gestures */
+            /* --- CRITICAL MOBILE FIXES --- */
+            /* Prevents blue highlighting and selecting text */
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            -khtml-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+            /* Prevents zooming on double tap */
+            touch-action: none; 
         }
 
         #ui-layer {
@@ -26,45 +28,54 @@
             top: 20px;
             left: 20px;
             color: white;
-            pointer-events: none; /* Lets clicks pass through to game */
+            pointer-events: none; 
             text-shadow: 1px 1px 0 #000;
+            z-index: 5;
         }
-        
-        /* Joystick Zone: Bottom Right or Left */
+
+        /* MAP SELECTOR MENU */
+        #map-selector {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9); display: flex; flex-direction: column;
+            justify-content: center; align-items: center; z-index: 100; color: white;
+        }
+
+        /* JOYSTICK ZONE (Left Side) */
         #zone_joystick {
             position: absolute;
-            bottom: 50px;
-            right: 50px;
+            bottom: 20px;
+            left: 20px;
             width: 150px;
             height: 150px;
             z-index: 10;
-            /* Only visible on touch usually, but fine to keep for now */
         }
         
-        /* Jump Button for Mobile */
+        /* JUMP BUTTON (Right Side) */
         #mobile-jump {
             position: absolute;
-            bottom: 50px;
-            left: 50px;
+            bottom: 40px;
+            right: 40px;
             width: 80px;
             height: 80px;
-            background: rgba(255, 255, 255, 0.2);
-            border: 2px solid white;
+            background: rgba(0, 255, 0, 0.3); /* Green tint */
+            border: 3px solid #00ff00;
             border-radius: 50%;
             display: flex;
             justify-content: center;
             align-items: center;
             color: white;
             font-weight: bold;
+            font-size: 18px;
             z-index: 10;
+            user-select: none;
         }
         #mobile-jump:active {
-            background: rgba(255, 255, 255, 0.5);
+            background: rgba(0, 255, 0, 0.6);
+            transform: scale(0.95);
         }
 
         .highlight { color: #00ff00; font-weight: bold; font-size: 24px; }
         .danger { color: #ff0000; font-weight: bold; font-size: 24px; animation: blink 0.5s infinite; }
-        
         @keyframes blink { 50% { opacity: 0; } }
     </style>
     
@@ -85,28 +96,28 @@
         <div id="timer" class="highlight">90.0</div>
     </div>
 
+    <div id="map-selector">
+        <h1 style="font-size: 30px; text-shadow: 0 0 10px #ff00ff; margin-bottom: 30px;">SELECT MAP</h1>
+        
+        <button onclick="startGame('shoreditch_v3.glb')" style="
+            padding: 15px 30px; margin: 10px; font-size: 18px; background: transparent;
+            border: 2px solid #00ff00; color: #00ff00; cursor: pointer; text-transform: uppercase;">
+            SHOREDITCH
+        </button>
+
+        <button onclick="startGame('test_map.glb')" style="
+            padding: 15px 30px; margin: 10px; font-size: 18px; background: transparent;
+            border: 2px solid #ffff00; color: #ffff00; cursor: pointer; text-transform: uppercase;">
+            SMALL MAP
+        </button>
+    </div>
+
     <div id="zone_joystick"></div>
-    <div id="mobile-jump" ontouchstart="triggerJump()" onmousedown="triggerJump()">JUMP</div>
-
-    <div id="pause-screen" style="display:none; position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); color:white; font-size:40px; background:rgba(0,0,0,0.8); padding:20px;">
-        PAUSED
-    </div>
-
-    <div id="game-over" style="display:none; position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); color:red; font-size:50px; font-weight:bold; text-shadow: 2px 2px black;">
-        GAME OVER
-    </div>
+    <div id="mobile-jump">JUMP</div>
+    <div id="pause-screen" style="display:none; position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); color:white; font-size:40px; background:rgba(0,0,0,0.8); padding:20px;">PAUSED</div>
+    <div id="game-over" style="display:none; position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); color:red; font-size:50px; font-weight:bold;">GAME OVER</div>
     
     <script type="module" src="game.js"></script>
-    
-    <script>
-        function triggerJump() {
-            // Dispatch a fake spacebar press
-            window.dispatchEvent(new KeyboardEvent('keydown', {'key': ' '}));
-            setTimeout(() => {
-                window.dispatchEvent(new KeyboardEvent('keyup', {'key': ' '}));
-            }, 100);
-        }
-    </script>
 
 </body>
 </html>

@@ -228,12 +228,30 @@ loader.load('shoreditch.glb', (gltf) => {
     
     cityGroup.add(map);
     
-    if (validRoadPositions.length > 0) {
-        const startPos = validRoadPositions[Math.floor(Math.random() * validRoadPositions.length)];
-        playerGroup.position.set(startPos.x, 0, startPos.z);
-        spawnBeacon();
-        spawnPowerup(); 
-    } 
+  // ... inside loader.load, after cityGroup.add(map) ...
+    
+    // FIX: Force update matrices so raycaster sees the new mesh immediately
+    cityGroup.updateMatrixWorld(true);
+
+    // Try to find a spawn point
+    let startPos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, 100);
+    
+    // If getting close failed, try a wider search
+    if (!startPos) startPos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 100, 500);
+
+    if (startPos) {
+        playerGroup.position.copy(startPos);
+        // FIX: Drop from the sky (add height) to let gravity settle the player naturally
+        playerGroup.position.y += 5.0; 
+        verticalVelocity = 0; // Reset velocity
+    } else {
+        // Absolute emergency fallback
+        console.error("Could not find spawn point, defaulting to 0,20,0");
+        playerGroup.position.set(0, 20, 0); 
+    }
+    
+    spawnBeacon();
+    spawnPowerup(); 
 
 }, undefined, (err) => console.error("Map Error:", err));
 
@@ -351,7 +369,7 @@ function canMove(position, direction) {
 }
 
 function getAnywhereSpawnPoint(centerPos, minRadius, maxRadius) {
-    const maxTries = 15; 
+    const maxTries = 30; // Increased tries
     
     for (let i = 0; i < maxTries; i++) {
         let radius = minRadius + Math.random() * (maxRadius - minRadius);
@@ -363,17 +381,21 @@ function getAnywhereSpawnPoint(centerPos, minRadius, maxRadius) {
         
         if (Math.abs(testX) > MAP_LIMIT || Math.abs(testZ) > MAP_LIMIT) continue;
 
-        raycaster.set(new THREE.Vector3(testX, 50, testZ), downVector);
+        // FIX: Start raycast from much higher (300) to clear tall buildings
+        raycaster.set(new THREE.Vector3(testX, 300, testZ), downVector);
         const intersects = raycaster.intersectObjects(colliderMeshes, false);
         
         if (intersects.length > 0) {
             const hit = intersects[0];
-            if (hit.point.y > -5 && hit.point.y < 20) {
-                return new THREE.Vector3(testX, hit.point.y + 0.5, testZ);
+            // Allow a wider range of heights
+            if (hit.point.y > -20 && hit.point.y < 50) {
+                // Return point slightly above floor (+2.0) to prevent clipping
+                return new THREE.Vector3(testX, hit.point.y + 2.0, testZ);
             }
         } 
     }
-    return new THREE.Vector3(centerPos.x, 5, centerPos.z); 
+    // Return NULL if we failed, so the caller knows to try again
+    return null; 
 }
 
 function spawnBeacon() {
@@ -653,9 +675,22 @@ function animate() {
                 }
             }
             
+            // NEW CODE: Smart Respawn
             if (playerGroup.position.y < -50) {
-                playerGroup.position.set(0, 5, 0);
+                console.log("Player fell out of world. Respawning...");
+                
+                // Try to find a safe spot near 0,0
+                let safeSpot = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, 200);
+                
+                if (safeSpot) {
+                    playerGroup.position.copy(safeSpot);
+                    playerGroup.position.y += 5.0; // Drop in
+                } else {
+                    playerGroup.position.set(0, 20, 0); // Emergency float
+                }
+                
                 verticalVelocity = 0;
+                isGrounded = false;
             }
 
             arrowMesh.lookAt(beaconGroup.position.x, 4, beaconGroup.position.z);

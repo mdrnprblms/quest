@@ -2,122 +2,117 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>High Street Runner</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mdrn Quest - Alpha</title>
     <style>
-        body { 
-            margin: 0; 
-            overflow: hidden; 
-            background-color: #000;
-            font-family: 'Courier New', Courier, monospace;
-            
-            /* --- CRITICAL MOBILE FIXES --- */
-            /* Prevents blue highlighting and selecting text */
-            -webkit-touch-callout: none;
-            -webkit-user-select: none;
-            -khtml-user-select: none;
-            -moz-user-select: none;
-            -ms-user-select: none;
-            user-select: none;
-            /* Prevents zooming on double tap */
-            touch-action: none; 
-        }
+        @font-face { font-family: 'Medieval'; src: url('./blackletter.ttf'); }
 
-        #ui-layer {
+        body { margin: 0; overflow: hidden; background-color: #111; }
+        canvas { display: block; }
+
+        #ui-container {
             position: absolute;
             top: 20px;
             left: 20px;
             color: white;
-            pointer-events: none; 
-            text-shadow: 1px 1px 0 #000;
-            z-index: 5;
-        }
-
-        /* MAP SELECTOR MENU */
-        #map-selector {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.9); display: flex; flex-direction: column;
-            justify-content: center; align-items: center; z-index: 100; color: white;
-        }
-
-        /* JOYSTICK ZONE (Left Side) */
-        #zone_joystick {
-            position: absolute;
-            bottom: 20px;
-            left: 20px;
-            width: 150px;
-            height: 150px;
-            z-index: 10;
-        }
-        
-        /* JUMP BUTTON (Right Side) */
-        #mobile-jump {
-            position: absolute;
-            bottom: 40px;
-            right: 40px;
-            width: 80px;
-            height: 80px;
-            background: rgba(0, 255, 0, 0.3); /* Green tint */
-            border: 3px solid #00ff00;
-            border-radius: 50%;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            color: white;
-            font-weight: bold;
-            font-size: 18px;
-            z-index: 10;
             user-select: none;
-        }
-        #mobile-jump:active {
-            background: rgba(0, 255, 0, 0.6);
-            transform: scale(0.95);
+            pointer-events: none;
+            text-shadow: 4px 4px 0px #000;
+            z-index: 100;
         }
 
-        .highlight { color: #00ff00; font-weight: bold; font-size: 24px; }
-        .danger { color: #ff0000; font-weight: bold; font-size: 24px; animation: blink 0.5s infinite; }
-        @keyframes blink { 50% { opacity: 0; } }
-    </style>
-    
-    <script type="importmap">
-    {
-        "imports": {
-            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        h1 {
+            font-family: 'Medieval', serif;
+            margin: 0;
+            font-size: 60px; 
+            line-height: 0.8;
+            font-weight: normal;
+            letter-spacing: 2px;
         }
-    }
-    </script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.10.1/nipplejs.min.js"></script>
+
+        p.score-text {
+            font-family: 'Medieval', serif;
+            font-size: 30px;
+            margin: 10px 0;
+        }
+
+        p.instructions {
+            font-family: 'Helvetica', 'Arial', sans-serif;
+            font-size: 18px; 
+            font-weight: bold;
+            opacity: 0.8;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            text-shadow: 2px 2px 0px #000;
+        }
+
+        .highlight { color: #ffff00; }
+        .danger { color: #ff3333; }
+
+        /* PAUSE SCREEN */
+        #pause-screen {
+            display: none; /* Hidden by default */
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-family: 'Medieval', serif;
+            font-size: 100px;
+            color: white;
+            text-shadow: 5px 5px 0px #000;
+            z-index: 200;
+        }
+
+        #game-over {
+            display: none; 
+            font-family: 'Medieval', serif; 
+            font-size: 80px; 
+            color: #ff3333; 
+            margin-top: 20px;
+            text-shadow: 4px 4px 0px #000;
+        }
+    </style>
 </head>
 <body>
-
-    <div id="ui-layer">
-        <div id="score">SCORE: 0</div>
-        <div id="timer" class="highlight">90.0</div>
-    </div>
-
-    <div id="map-selector">
-        <h1 style="font-size: 30px; text-shadow: 0 0 10px #ff00ff; margin-bottom: 30px;">SELECT MAP</h1>
-        
-        <button onclick="startGame('shoreditch_v3.glb')" style="
-            padding: 15px 30px; margin: 10px; font-size: 18px; background: transparent;
-            border: 2px solid #00ff00; color: #00ff00; cursor: pointer; text-transform: uppercase;">
-            SHOREDITCH
-        </button>
-
-        <button onclick="startGame('test_map.glb')" style="
-            padding: 15px 30px; margin: 10px; font-size: 18px; background: transparent;
-            border: 2px solid #ffff00; color: #ffff00; cursor: pointer; text-transform: uppercase;">
-            SMALL MAP
-        </button>
-    </div>
-
-    <div id="zone_joystick"></div>
-    <div id="mobile-jump">JUMP</div>
-    <div id="pause-screen" style="display:none; position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); color:white; font-size:40px; background:rgba(0,0,0,0.8); padding:20px;">PAUSED</div>
-    <div id="game-over" style="display:none; position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); color:red; font-size:50px; font-weight:bold;">GAME OVER</div>
     
-    <script type="module" src="game.js"></script>
+    <div id="ui-container">
+        <h1>Mdrn Quest</h1>
+        <p class="score-text">Deliveries: <span id="score" class="highlight">0</span></p>
+        
+        <p class="instructions">
+            Deliver a pack to the green beacon<br>
+            <span style="font-size: 14px; opacity: 0.6;">Time Left: <span id="timer" class="highlight">60.0</span>s</span>
+        </p>
 
+        <div id="status-panel" style="margin-top: 10px; font-family: 'Helvetica', sans-serif; font-size: 16px; font-weight: bold;">
+            <div id="status-bike" style="color: #32CD32; display: none; text-shadow: 2px 2px 0px #000;">
+                [ LIME BIKE ACTIVE ]
+            </div>
+            <div id="status-drink" style="color: #00FFFF; display: none; text-shadow: 2px 2px 0px #000;">
+                ENERGY: <span id="drink-timer">0.0</span>s
+            </div>
+        </div>
+        
+        <p class="instructions" style="font-size: 14px; margin-top: 20px; opacity: 0.6;">
+            [M] MAP &nbsp; [P] PAUSE
+        </p>
+
+        <div id="game-over">SHIFT ENDED</div>
+    </div>
+<div style="position: absolute; top: 10px; right: 10px; z-index: 100;">
+    <button onclick="window.debugSpawn('bike')">Spawn Bike</button>
+    <button onclick="window.debugSpawn('drink')">Spawn Drink</button>
+</div>
+    <div id="pause-screen">PAUSED</div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script type="module" src="./game.js"></script>
 </body>
 </html>

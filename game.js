@@ -1,5 +1,35 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+// ... existing imports ...
+
+// --- JOYSTICK SETUP ---
+let joystickManager;
+let joystickInput = { x: 0, y: 0 }; // Stores forward/turn values
+
+// Only init if nipplejs is loaded (failsafe)
+if (typeof nipplejs !== 'undefined') {
+    const zone = document.getElementById('zone_joystick');
+    joystickManager = nipplejs.create({
+        zone: zone,
+        mode: 'static',
+        position: { left: '50%', top: '50%' },
+        color: 'white'
+    });
+
+    joystickManager.on('move', function (evt, data) {
+        // data.vector is normalized (roughly -1 to 1)
+        // y is up/down (Move), x is left/right (Turn)
+        if (data.vector) {
+            joystickInput.y = data.vector.y; 
+            joystickInput.x = data.vector.x; 
+        }
+    });
+
+    joystickManager.on('end', function (evt) {
+        joystickInput.x = 0;
+        joystickInput.y = 0;
+    });
+}
 
 // --- 1. CONFIGURATION ---
 const START_TIME = 90.0;    
@@ -634,13 +664,29 @@ function animate() {
 
         if (gameActive && !isMapOpen) {
             
-            // 1. INPUT
+                        // 1. INPUT (Keyboard OR Joystick)
             let forward = 0;
+            
+            // Keyboard
             if (keys.w) forward = 1;
             if (keys.s) forward = -1;
             
+            // Joystick Override (Threshold prevents drift)
+            if (Math.abs(joystickInput.y) > 0.1) {
+                // Determine direction based on joystick Up/Down
+                forward = joystickInput.y > 0 ? 1 : -1;
+            }
+
+            // Rotation (Keyboard)
             if (keys.a) cameraAngle += cameraRotationSpeed;
             if (keys.d) cameraAngle -= cameraRotationSpeed;
+            
+            // Rotation (Joystick Left/Right)
+            if (Math.abs(joystickInput.x) > 0.1) {
+                // -x is left, +x is right. We subtract/add to angle.
+                // We multiply by 1.5 to make turning feel responsive
+                cameraAngle -= joystickInput.x * cameraRotationSpeed * 1.5;
+            }
 
             // 2. JUMP
             if (keys.space && isGrounded && !jumpLocked) {

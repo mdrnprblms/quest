@@ -466,8 +466,15 @@ const currentLookAt = new THREE.Vector3(0, 0, 0);
 
 window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
+    
+    // FIX: Prevent default browser actions (scrolling/button clicking) for Space
+    if (k === ' ') {
+        e.preventDefault(); 
+    }
+
     if (keys.hasOwnProperty(k)) keys[k] = true;
     if (k === ' ') keys.space = true; 
+    
     if (k === 'p') isPaused = !isPaused;
     if (k === 'm') isMapOpen = !isMapOpen;
     if (k === 't') {
@@ -701,13 +708,17 @@ window.addEventListener('resize', () => {
 
 // DEBUG SPAWN REPAIRED
 window.debugSpawn = (forcedType) => {
+    // FIX: Un-focus the button so Spacebar doesn't trigger it again
+    if (document.activeElement) {
+        document.activeElement.blur();
+    }
+
     const playerPos = playerGroup.position;
     const pos = getAnywhereSpawnPoint(playerPos, 5, 20);
     if (!pos) {
         console.warn("No spawn spot found");
         return;
     }
-    // Now calls the proper creation helper
     createPowerupGroup(forcedType, pos);
     console.log("Debug Spawn:", forcedType);
 };

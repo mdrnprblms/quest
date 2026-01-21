@@ -685,16 +685,15 @@ function animate() {
 
         if (gameActive && !isMapOpen) {
             
-                        // 1. INPUT (Keyboard OR Joystick)
+            // 1. INPUT
             let forward = 0;
             
             // Keyboard
             if (keys.w) forward = 1;
             if (keys.s) forward = -1;
             
-            // Joystick Override (Threshold prevents drift)
+            // Joystick Override
             if (Math.abs(joystickInput.y) > 0.1) {
-                // Determine direction based on joystick Up/Down
                 forward = joystickInput.y > 0 ? 1 : -1;
             }
 
@@ -702,11 +701,9 @@ function animate() {
             if (keys.a) cameraAngle += cameraRotationSpeed;
             if (keys.d) cameraAngle -= cameraRotationSpeed;
             
-            // Rotation (Joystick Left/Right)
+            // Rotation (Joystick)
             if (Math.abs(joystickInput.x) > 0.1) {
-                // -x is left, +x is right. We subtract/add to angle.
-                // We multiply by 1.5 to make turning feel responsive
-                cameraAngle -= joystickInput.x * cameraRotationSpeed * 1.5;
+                cameraAngle -= joystickInput.x * cameraRotationSpeed * 2.0;
             }
 
             // 2. JUMP

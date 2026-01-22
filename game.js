@@ -1,13 +1,51 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
+// --- MOBILE CONTROLS SETUP ---
+let joystickInput = { x: 0, y: 0 };
+let joystickManager;
+
+setTimeout(() => {
+    const zone = document.getElementById('zone_joystick');
+    if (typeof nipplejs !== 'undefined' && zone) {
+        joystickManager = nipplejs.create({
+            zone: zone,
+            mode: 'static',
+            position: { left: '50%', top: '50%' },
+            color: 'white',
+            size: 100
+        });
+        joystickManager.on('move', function (evt, data) {
+            if (data.vector) {
+                joystickInput.y = data.vector.y; 
+                joystickInput.x = data.vector.x; 
+            }
+        });
+        joystickManager.on('end', function (evt) {
+            joystickInput.x = 0;
+            joystickInput.y = 0;
+        });
+    }
+
+    const jumpBtn = document.getElementById('mobile-jump');
+    if (jumpBtn) {
+        jumpBtn.addEventListener('touchstart', (e) => {
+            e.preventDefault(); 
+            keys.space = true;
+        }, { passive: false });
+        jumpBtn.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            keys.space = false;
+            jumpLocked = false; 
+        }, { passive: false });
+    }
+}, 500);
+
 // --- 1. CONFIGURATION ---
 const START_TIME = 90.0;    
 const TIME_BONUS = 30.0;    
-
-// SPEED TUNING
-const BASE_SPEED = 20.0;     // Increased for faster gameplay
-const BIKE_MULTIPLIER = 1.8; // Reduced slightly so you don't fly off map
+const BASE_SPEED = 20.0; // Updated to 20 for better speed
+const BIKE_MULTIPLIER = 1.8; 
 const DRINK_MULTIPLIER = 1.4; 
 const DRINK_DURATION = 15.0;
 const POWERUP_SPAWN_RATE = 5.0; 
@@ -16,7 +54,7 @@ const MAP_LIMIT = 2000;
 
 // STATE
 let score = 0;
-let armor = 0;              
+let armor = 0;
 let timeLeft = START_TIME;
 let gameActive = true;
 let isPaused = false; 
@@ -30,8 +68,7 @@ let spawnTimer = 0;
 let verticalVelocity = 0;
 let isGrounded = true;
 let jumpLocked = false;
-// Increased Gravity/Jump to match the faster running speed
-const GRAVITY = -60.0; 
+const GRAVITY = -60.0;      
 const JUMP_FORCE = 30.0;    
 
 // DATA STORE
@@ -44,25 +81,42 @@ let lionTeeTemplate = null;
 let lionTeeGreyTemplate = null;
 let beltTemplate = null;         
 
+// MAP STATE
+let currentMapName = 'shoreditch.glb'; 
+
 // UI HELPERS
 function updateUI() {
     const uiScore = document.getElementById('score');
     const uiTimer = document.getElementById('timer');
     const uiPause = document.getElementById('pause-screen'); 
     const uiGameOver = document.getElementById('game-over');
+    const uiDrink = document.getElementById('status-drink');
+    const uiBike = document.getElementById('status-bike');
+    const uiDrinkTimer = document.getElementById('drink-timer');
 
     if(uiScore) {
         let status = "WALKING";
         if (hasBike && drinkTimer > 0) status = "STACKING IT"; 
         else if (hasBike) status = "ON BIKE";
         else if (drinkTimer > 0) status = "SUGAR RUSH";
-        
         uiScore.innerText = `${score} | 🛡️ ${armor} | ${status}`;
     }
 
     if(uiTimer) {
         uiTimer.innerText = timeLeft.toFixed(1);
         uiTimer.className = timeLeft < 10 ? "danger" : "highlight";
+    }
+    
+    if (uiDrink && uiBike) {
+        if (hasBike) uiBike.style.display = 'block';
+        else uiBike.style.display = 'none';
+
+        if (drinkTimer > 0) {
+            uiDrink.style.display = 'block';
+            uiDrinkTimer.innerText = drinkTimer.toFixed(1);
+        } else {
+            uiDrink.style.display = 'none';
+        }
     }
     
     if(uiPause) uiPause.style.display = isPaused ? "block" : "none";
@@ -171,62 +225,76 @@ arrowMesh.geometry.rotateX(Math.PI / 2);
 arrowMesh.position.y = 6; 
 playerGroup.add(arrowMesh);
 
-// MAP LOADER
-// MAP LOADER
-loader.load('shoreditch.glb', (gltf) => {
-    const map = gltf.scene;
-    map.scale.set(3, 3, 3);
+// --- MAP LOADER FUNCTION ---
+function loadLevel(mapName) {
+    console.log("Loading Map:", mapName);
     
-    const box = new THREE.Box3().setFromObject(map);
-    const center = box.getCenter(new THREE.Vector3());
-    map.position.x += (map.position.x - center.x);
-    map.position.z += (map.position.z - center.z);
-    map.position.y = -0.2; 
+    // 1. Cleanup Old Map
+    while(cityGroup.children.length > 0){ 
+        cityGroup.remove(cityGroup.children[0]); 
+    }
+    colliderMeshes = [];
+    validRoadPositions = [];
+    
+    // Clear Powerups
+    powerups.forEach(p => scene.remove(p));
+    powerups = [];
 
-    map.traverse((child) => {
-        if (child.isMesh) {
-            if (child.name !== "IGNORE_ME") {
-                child.castShadow = true;
-                child.receiveShadow = true;
-                child.name = "CITY_MESH"; 
-                colliderMeshes.push(child);
-                if (child.material) {
-                    child.material.roughness = 0.9;
-                    child.material.metalness = 0.1;
-                    child.material.side = THREE.DoubleSide; 
+    // 2. Load New Map
+    loader.load(mapName, (gltf) => {
+        const map = gltf.scene;
+        map.scale.set(3, 3, 3);
+        
+        const box = new THREE.Box3().setFromObject(map);
+        const center = box.getCenter(new THREE.Vector3());
+        map.position.x += (map.position.x - center.x);
+        map.position.z += (map.position.z - center.z);
+        map.position.y = -0.2; 
+
+        map.traverse((child) => {
+            if (child.isMesh) {
+                if (child.name !== "IGNORE_ME") {
+                    child.castShadow = true;
+                    child.receiveShadow = true;
+                    child.name = "CITY_MESH"; 
+                    colliderMeshes.push(child);
+                    
+                    if (child.material) {
+                        child.material.roughness = 0.9;
+                        child.material.metalness = 0.1;
+                        child.material.side = THREE.DoubleSide; 
+                    }
                 }
             }
+        });
+        
+        cityGroup.add(map);
+
+        // 3. Update Physics & Spawn
+        cityGroup.updateMatrixWorld(true);
+        let startPos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, 100);
+        if (!startPos) startPos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 100, 500);
+
+        if (startPos) {
+            playerGroup.position.copy(startPos);
+            playerGroup.position.y += 5.0; 
+            verticalVelocity = 0; 
+        } else {
+            console.error("Could not find spawn point, defaulting to 0,20,0");
+            playerGroup.position.set(0, 20, 0); 
         }
+        
+        spawnBeacon();
+        spawnPowerup(); 
+
+    }, undefined, (err) => {
+        console.error("Map Error:", err);
+        alert("Could not load map: " + mapName);
     });
-    
-    cityGroup.add(map);
-    
-  // ... inside loader.load, after cityGroup.add(map) ...
-    
-    // FIX: Force update matrices so raycaster sees the new mesh immediately
-    cityGroup.updateMatrixWorld(true);
+}
 
-    // Try to find a spawn point
-    let startPos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, 100);
-    
-    // If getting close failed, try a wider search
-    if (!startPos) startPos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 100, 500);
-
-    if (startPos) {
-        playerGroup.position.copy(startPos);
-        // FIX: Drop from the sky (add height) to let gravity settle the player naturally
-        playerGroup.position.y += 5.0; 
-        verticalVelocity = 0; // Reset velocity
-    } else {
-        // Absolute emergency fallback
-        console.error("Could not find spawn point, defaulting to 0,20,0");
-        playerGroup.position.set(0, 20, 0); 
-    }
-    
-    spawnBeacon();
-    spawnPowerup(); 
-
-}, undefined, (err) => console.error("Map Error:", err));
+// Initial Load
+loadLevel(currentMapName);
 
 // --- PLAYER LOADER ---
 let playerMesh;
@@ -259,12 +327,10 @@ loader.load('playermodel.glb', (gltf) => {
     const idleClip = THREE.AnimationClip.findByName(clips, 'Idle');
     const runClip = THREE.AnimationClip.findByName(clips, 'Run');
     const jumpClip = THREE.AnimationClip.findByName(clips, 'Jump');
-    const punchClip = THREE.AnimationClip.findByName(clips, 'Punch');
     
     if (idleClip) animationsMap.set('Idle', mixer.clipAction(idleClip));
     if (runClip) animationsMap.set('Run', mixer.clipAction(runClip));
     if (jumpClip) animationsMap.set('Jump', mixer.clipAction(jumpClip));
-    if (punchClip) animationsMap.set('Punch', mixer.clipAction(punchClip));
     
     currentAction = animationsMap.get('Idle');
     if (currentAction) currentAction.play();
@@ -275,32 +341,52 @@ loader.load('playermodel.glb', (gltf) => {
 loader.load('limebike.glb', (gltf) => {
     bikeTemplate = gltf.scene;
     bikeTemplate.scale.set(2.5, 2.5, 2.5);
-    bikeTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
-}, undefined, (err) => console.error("Bike Load Error:", err));
+    bikeTemplate.traverse(o => { 
+        if(o.isMesh) { 
+            o.castShadow = true; o.receiveShadow = true;
+            if (o.material) { o.material.metalness = 0.0; o.material.roughness = 0.6; if (o.material.color) o.material.color.set(0xffffff); }
+        }
+    });
+});
 
 loader.load('monster_zero_ultra.glb', (gltf) => {
     drinkTemplate = gltf.scene;
     drinkTemplate.scale.set(0.6, 0.6, 0.6);
     drinkTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
-}, undefined, (err) => console.error("Drink Load Error:", err));
+});
 
 loader.load('liontee.glb', (gltf) => {
     lionTeeTemplate = gltf.scene;
     lionTeeTemplate.scale.set(1.5, 1.5, 1.5); 
-    lionTeeTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
-}, undefined, (err) => console.error("Lion Tee Error:", err));
+    lionTeeTemplate.traverse(o => { 
+        if(o.isMesh) { 
+            o.castShadow = true; o.receiveShadow = true; 
+            if (o.material) { o.material.metalness = 0.0; o.material.roughness = 0.8; if (o.material.color) o.material.color.set(0xffffff); }
+        }
+    });
+});
 
 loader.load('lionteegrey.glb', (gltf) => {
     lionTeeGreyTemplate = gltf.scene;
     lionTeeGreyTemplate.scale.set(1.5, 1.5, 1.5);
-    lionTeeGreyTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
-}, undefined, (err) => console.error("Lion Tee Grey Error:", err));
+    lionTeeGreyTemplate.traverse(o => { 
+        if(o.isMesh) { 
+            o.castShadow = true; o.receiveShadow = true; 
+            if (o.material) { o.material.metalness = 0.0; o.material.roughness = 0.8; if (o.material.color) o.material.color.set(0xffffff); }
+        }
+    });
+});
 
 loader.load('belt.glb', (gltf) => {
     beltTemplate = gltf.scene;
     beltTemplate.scale.set(2.0, 2.0, 2.0); 
-    beltTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
-}, undefined, (err) => console.error("Belt Error:", err));
+    beltTemplate.traverse(o => { 
+        if(o.isMesh) { 
+            o.castShadow = true; o.receiveShadow = true; 
+            if (o.material) { o.material.metalness = 0.0; o.material.roughness = 0.8; if (o.material.color) o.material.color.set(0xffffff); }
+        }
+    });
+});
 
 
 // --- 5. LOGIC & SPAWNING ---
@@ -322,8 +408,7 @@ function canMove(position, direction) {
 }
 
 function getAnywhereSpawnPoint(centerPos, minRadius, maxRadius) {
-    const maxTries = 30; // Increased tries
-    
+    const maxTries = 30; 
     for (let i = 0; i < maxTries; i++) {
         let radius = minRadius + Math.random() * (maxRadius - minRadius);
         let angle = Math.random() * Math.PI * 2;
@@ -334,26 +419,21 @@ function getAnywhereSpawnPoint(centerPos, minRadius, maxRadius) {
         
         if (Math.abs(testX) > MAP_LIMIT || Math.abs(testZ) > MAP_LIMIT) continue;
 
-        // FIX: Start raycast from much higher (300) to clear tall buildings
         raycaster.set(new THREE.Vector3(testX, 300, testZ), downVector);
         const intersects = raycaster.intersectObjects(colliderMeshes, false);
         
         if (intersects.length > 0) {
             const hit = intersects[0];
-            // Allow a wider range of heights
             if (hit.point.y > -20 && hit.point.y < 50) {
-                // Return point slightly above floor (+2.0) to prevent clipping
                 return new THREE.Vector3(testX, hit.point.y + 2.0, testZ);
             }
         } 
     }
-    // Return NULL if we failed, so the caller knows to try again
     return null; 
 }
 
 function spawnBeacon() {
     let pos = getAnywhereSpawnPoint(playerGroup.position, 50, 300);
-    
     if (pos) {
         beaconGroup.position.copy(pos);
     } else {
@@ -374,7 +454,6 @@ function spawnPowerup() {
     createPowerupGroup(type, pos);
 }
 
-// Helper to avoid duplicate code in Spawn and Debug
 function createPowerupGroup(type, pos) {
     const group = new THREE.Group();
     group.position.copy(pos);
@@ -434,65 +513,22 @@ let cameraAngle = 0;
 const cameraRotationSpeed = 0.03;
 const currentLookAt = new THREE.Vector3(0, 0, 0);
 
-// --- JOYSTICK SETUP ---
-let joystickManager;
-let joystickInput = { x: 0, y: 0 };
-
-if (typeof nipplejs !== 'undefined') {
-    // Wait for DOM
-    setTimeout(() => {
-        const zone = document.getElementById('zone_joystick');
-        if (zone) {
-            joystickManager = nipplejs.create({
-                zone: zone,
-                mode: 'static',
-                position: { left: '50%', top: '50%' },
-                color: 'white',
-                size: 100
-            });
-
-            joystickManager.on('move', function (evt, data) {
-                if (data.vector) {
-                    joystickInput.y = data.vector.y; 
-                    joystickInput.x = data.vector.x; 
-                }
-            });
-
-            joystickManager.on('end', function (evt) {
-                joystickInput.x = 0;
-                joystickInput.y = 0;
-            });
-        }
-        
-        // JUMP BUTTON LOGIC
-        const jumpBtn = document.getElementById('mobile-jump');
-        if (jumpBtn) {
-            // Touch Start: Press Space
-            jumpBtn.addEventListener('touchstart', (e) => {
-                e.preventDefault(); 
-                keys.space = true;
-            }, { passive: false });
-
-            // Touch End: Release Space
-            jumpBtn.addEventListener('touchend', (e) => {
-                e.preventDefault();
-                keys.space = false;
-                jumpLocked = false; 
-            }, { passive: false });
-        }
-    }, 500);
-}
-
-
 window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
-    if (k === ' ') e.preventDefault(); 
+    
+    // FIX: Prevent scrolling with Space
+    if (k === ' ') {
+        e.preventDefault(); 
+    }
+
     if (keys.hasOwnProperty(k)) keys[k] = true;
     if (k === ' ') keys.space = true; 
     
     if (k === 'p') isPaused = !isPaused;
     if (k === 'm') isMapOpen = !isMapOpen;
-    if (k === 't') { isTimerRunning = !isTimerRunning; }
+    if (k === 't') {
+        isTimerRunning = !isTimerRunning;
+    }
 });
 window.addEventListener('keyup', (e) => {
     const k = e.key.toLowerCase();
@@ -538,15 +574,11 @@ function animate() {
             if (p.userData.active && playerGroup.position.distanceTo(p.position) < 2.5) {
                 if (p.userData.type === 'bike') {
                     hasBike = true;
-                    // console.log("COLLECTED: Lime Bike!");
-                } 
-                else if (p.userData.type === 'drink') {
+                } else if (p.userData.type === 'drink') {
                     drinkTimer = DRINK_DURATION;
-                }
-                else if (p.userData.type === 'armor_tee') {
+                } else if (p.userData.type === 'armor_tee') {
                     armor += 2; 
-                }
-                else if (p.userData.type === 'armor_belt') {
+                } else if (p.userData.type === 'armor_belt') {
                     armor += 1; 
                 }
                 
@@ -562,23 +594,23 @@ function animate() {
 
         if (gameActive && !isMapOpen) {
             
-            // 1. INPUT (Mixed)
+            // 1. INPUT
             let forward = 0;
             
             // Keyboard
             if (keys.w) forward = 1;
             if (keys.s) forward = -1;
             
-            // Joystick Override
+            // Joystick Override (Y Axis)
             if (Math.abs(joystickInput.y) > 0.1) {
                 forward = joystickInput.y > 0 ? 1 : -1;
             }
 
-            // Rotation
+            // Rotation (Keyboard)
             if (keys.a) cameraAngle += cameraRotationSpeed;
             if (keys.d) cameraAngle -= cameraRotationSpeed;
-            
-            // Joystick Turn
+
+            // Rotation (Joystick X Axis)
             if (Math.abs(joystickInput.x) > 0.1) {
                 cameraAngle -= joystickInput.x * cameraRotationSpeed * 2.0;
             }
@@ -594,7 +626,6 @@ function animate() {
                     jumpAction.reset().setLoop(THREE.LoopOnce).play();
                     jumpAction.clampWhenFinished = true;
                     jumpAction.timeScale = 1.3; 
-
                     if (currentAction && currentAction !== jumpAction) {
                         currentAction.fadeOut(0.2);
                     }
@@ -613,6 +644,7 @@ function animate() {
                 const moveVec = new THREE.Vector3(dirX * forward, 0, dirZ * forward).normalize();
 
                 if (canMove(playerGroup.position, moveVec)) {
+                    // DELTA TIME MOVEMENT
                     playerGroup.position.x += moveVec.x * currentSpeed * delta;
                     playerGroup.position.z += moveVec.z * currentSpeed * delta;
                 }
@@ -670,20 +702,16 @@ function animate() {
                 }
             }
             
-            // NEW CODE: Smart Respawn
+            // SMART RESPAWN
             if (playerGroup.position.y < -50) {
                 console.log("Player fell out of world. Respawning...");
-                
-                // Try to find a safe spot near 0,0
                 let safeSpot = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, 200);
-                
                 if (safeSpot) {
                     playerGroup.position.copy(safeSpot);
-                    playerGroup.position.y += 5.0; // Drop in
+                    playerGroup.position.y += 5.0; 
                 } else {
-                    playerGroup.position.set(0, 20, 0); // Emergency float
+                    playerGroup.position.set(0, 20, 0); 
                 }
-                
                 verticalVelocity = 0;
                 isGrounded = false;
             }
@@ -736,15 +764,30 @@ window.addEventListener('resize', () => {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 });
 
-// DEBUG SPAWN REPAIRED
 window.debugSpawn = (forcedType) => {
-    // FIX: Un-focus the button so Spacebar doesn't trigger it again
     if (document.activeElement) {
         document.activeElement.blur();
     }
-
     const playerPos = playerGroup.position;
     const pos = getAnywhereSpawnPoint(playerPos, 5, 20);
-    if (!pos) return;
+    if (!pos) {
+        console.warn("No spawn spot found");
+        return;
+    }
     createPowerupGroup(forcedType, pos);
+    console.log("Debug Spawn:", forcedType);
+};
+
+// --- MAP SWITCHER ---
+window.switchMap = () => {
+    // Simple toggle logic
+    if (currentMapName === 'shoreditch.glb') {
+        currentMapName = 'archway.glb';
+    } else {
+        currentMapName = 'shoreditch.glb';
+    }
+    loadLevel(currentMapName);
+    
+    // De-focus button so spacebar doesn't trigger it again
+    if (document.activeElement) document.activeElement.blur();
 };

@@ -12,17 +12,13 @@
             overflow: hidden; 
             background-color: #111; 
             
-            /* --- MOBILE FIXES --- */
-            /* Prevents blue highlighting and selecting text */
+            /* --- MOBILE TOUCH FIXES --- */
             -webkit-touch-callout: none;
             -webkit-user-select: none;
-            -khtml-user-select: none;
-            -moz-user-select: none;
-            -ms-user-select: none;
             user-select: none;
-            /* Prevents zooming/scrolling */
             touch-action: none; 
         }
+
         canvas { display: block; }
 
         #ui-container {
@@ -31,7 +27,7 @@
             left: 20px;
             color: white;
             user-select: none;
-            pointer-events: none; /* Let touches pass through to game */
+            pointer-events: none;
             text-shadow: 4px 4px 0px #000;
             z-index: 100;
         }
@@ -64,46 +60,8 @@
         .highlight { color: #ffff00; }
         .danger { color: #ff3333; }
 
-        /* --- MOBILE CONTROLS --- */
-        #zone_joystick {
-            position: absolute;
-            bottom: 20px;
-            left: 20px;
-            width: 150px;
-            height: 150px;
-            z-index: 50;
-            /* Debug: border: 1px solid red; */
-        }
-
-        #mobile-jump {
-            position: absolute;
-            bottom: 40px;
-            right: 40px;
-            width: 90px;
-            height: 90px;
-            background: rgba(0, 255, 0, 0.2);
-            border: 4px solid #00ff00;
-            border-radius: 50%;
-            color: #00ff00;
-            font-family: 'Helvetica', sans-serif;
-            font-weight: bold;
-            font-size: 18px;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            user-select: none;
-            z-index: 50;
-            text-shadow: 1px 1px 0 #000;
-        }
-        #mobile-jump:active {
-            background: rgba(0, 255, 0, 0.6);
-            color: white;
-            transform: scale(0.95);
-        }
-
-        /* PAUSE SCREEN */
         #pause-screen {
-            display: none; 
+            display: none;
             position: absolute;
             top: 50%;
             left: 50%;
@@ -113,7 +71,6 @@
             color: white;
             text-shadow: 5px 5px 0px #000;
             z-index: 200;
-            pointer-events: none;
         }
 
         #game-over {
@@ -124,8 +81,53 @@
             margin-top: 20px;
             text-shadow: 4px 4px 0px #000;
         }
+
+        /* --- MOBILE CONTROLS --- */
+        #zone_joystick {
+            position: absolute;
+            bottom: 40px;
+            right: 40px;
+            width: 150px;
+            height: 150px;
+            z-index: 150;
+        }
+
+        #mobile-jump {
+            position: absolute;
+            bottom: 40px;
+            left: 40px;
+            width: 90px;
+            height: 90px;
+            background: rgba(50, 205, 50, 0.3);
+            border: 4px solid #32CD32;
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-family: 'Helvetica', sans-serif;
+            font-weight: bold;
+            font-size: 18px;
+            z-index: 150;
+            text-shadow: 1px 1px 0 #000;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        
+        #mobile-jump:active {
+            background: rgba(50, 205, 50, 0.6);
+            transform: scale(0.95);
+        }
+
+        /* DEBUG BUTTONS */
+        .debug-btn {
+            background: #333; color: white; border: 1px solid #555;
+            padding: 8px 12px; margin-bottom: 5px; cursor: pointer;
+            font-family: sans-serif; font-size: 12px; display: block; width: 100%;
+        }
+        .debug-btn:active { background: #555; }
+
     </style>
-    
     <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.10.1/nipplejs.min.js"></script>
 </head>
 <body>
@@ -148,17 +150,22 @@
             </div>
         </div>
         
+        <p class="instructions" style="font-size: 14px; margin-top: 20px; opacity: 0.6;">
+            [M] MAP &nbsp; [P] PAUSE
+        </p>
+
         <div id="game-over">SHIFT ENDED</div>
     </div>
 
     <div id="zone_joystick"></div>
     <div id="mobile-jump">JUMP</div>
 
-    <div style="position: absolute; top: 10px; right: 10px; z-index: 100;">
-        <button onclick="window.debugSpawn('bike')">Spawn Bike</button>
-        <button onclick="window.debugSpawn('drink')">Spawn Drink</button>
+    <div style="position: absolute; top: 10px; right: 10px; z-index: 100; width: 120px;">
+        <button class="debug-btn" onclick="window.switchMap()">SWITCH MAP</button>
+        <button class="debug-btn" onclick="window.debugSpawn('bike')">Spawn Bike</button>
+        <button class="debug-btn" onclick="window.debugSpawn('drink')">Spawn Drink</button>
     </div>
-
+    
     <div id="pause-screen">PAUSED</div>
 
     <script type="importmap">

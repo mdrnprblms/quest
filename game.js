@@ -172,6 +172,7 @@ arrowMesh.position.y = 6;
 playerGroup.add(arrowMesh);
 
 // MAP LOADER
+// MAP LOADER
 loader.load('shoreditch.glb', (gltf) => {
     const map = gltf.scene;
     map.scale.set(3, 3, 3);
@@ -183,35 +184,7 @@ loader.load('shoreditch.glb', (gltf) => {
     map.position.y = -0.2; 
 
     map.traverse((child) => {
-        const name = child.name.toLowerCase();
-        const isRoadContainer = name.includes('highway') || name.includes('data') || name.includes('road');
-
-        if (isRoadContainer) {
-            let targetMesh = null;
-            if (child.isMesh || child.isLine) targetMesh = child;
-            else if (child.children.length > 0) {
-                 child.traverse((node) => { if (node.isMesh && !targetMesh) targetMesh = node; });
-            }
-
-            if (targetMesh) {
-                targetMesh.updateWorldMatrix(true, false);
-                const matrixWorld = targetMesh.matrixWorld;
-                const posAttribute = targetMesh.geometry.attributes.position;
-                
-                for (let i = 0; i < posAttribute.count; i++) {
-                    if (i % 50 !== 0) continue; 
-                    const vec = new THREE.Vector3();
-                    vec.fromBufferAttribute(posAttribute, i);
-                    vec.applyMatrix4(matrixWorld); 
-                    if (Math.abs(vec.x) < MAP_LIMIT && Math.abs(vec.z) < MAP_LIMIT) {
-                        validRoadPositions.push(new THREE.Vector3(vec.x, 0, vec.z));
-                    }
-                }
-                child.visible = false; 
-                child.name = "IGNORE_ME";
-                targetMesh.visible = false; 
-            }
-        } else if (child.isMesh) {
+        if (child.isMesh) {
             if (child.name !== "IGNORE_ME") {
                 child.castShadow = true;
                 child.receiveShadow = true;
@@ -302,12 +275,7 @@ loader.load('playermodel.glb', (gltf) => {
 loader.load('limebike.glb', (gltf) => {
     bikeTemplate = gltf.scene;
     bikeTemplate.scale.set(2.5, 2.5, 2.5);
-    bikeTemplate.traverse(o => { 
-        if(o.isMesh) { 
-            o.castShadow = true; o.receiveShadow = true;
-            if (o.material) { o.material.metalness = 0.0; o.material.roughness = 0.6; if (o.material.color) o.material.color.set(0xffffff); }
-        }
-    });
+    bikeTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
 }, undefined, (err) => console.error("Bike Load Error:", err));
 
 loader.load('monster_zero_ultra.glb', (gltf) => {
@@ -319,34 +287,19 @@ loader.load('monster_zero_ultra.glb', (gltf) => {
 loader.load('liontee.glb', (gltf) => {
     lionTeeTemplate = gltf.scene;
     lionTeeTemplate.scale.set(1.5, 1.5, 1.5); 
-    lionTeeTemplate.traverse(o => { 
-        if(o.isMesh) { 
-            o.castShadow = true; o.receiveShadow = true; 
-            if (o.material) { o.material.metalness = 0.0; o.material.roughness = 0.8; if (o.material.color) o.material.color.set(0xffffff); }
-        }
-    });
+    lionTeeTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
 }, undefined, (err) => console.error("Lion Tee Error:", err));
 
 loader.load('lionteegrey.glb', (gltf) => {
     lionTeeGreyTemplate = gltf.scene;
     lionTeeGreyTemplate.scale.set(1.5, 1.5, 1.5);
-    lionTeeGreyTemplate.traverse(o => { 
-        if(o.isMesh) { 
-            o.castShadow = true; o.receiveShadow = true; 
-            if (o.material) { o.material.metalness = 0.0; o.material.roughness = 0.8; if (o.material.color) o.material.color.set(0xffffff); }
-        }
-    });
+    lionTeeGreyTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
 }, undefined, (err) => console.error("Lion Tee Grey Error:", err));
 
 loader.load('belt.glb', (gltf) => {
     beltTemplate = gltf.scene;
     beltTemplate.scale.set(2.0, 2.0, 2.0); 
-    beltTemplate.traverse(o => { 
-        if(o.isMesh) { 
-            o.castShadow = true; o.receiveShadow = true; 
-            if (o.material) { o.material.metalness = 0.0; o.material.roughness = 0.8; if (o.material.color) o.material.color.set(0xffffff); }
-        }
-    });
+    beltTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
 }, undefined, (err) => console.error("Belt Error:", err));
 
 
@@ -404,12 +357,7 @@ function spawnBeacon() {
     if (pos) {
         beaconGroup.position.copy(pos);
     } else {
-        if (validRoadPositions.length > 0) {
-             const randomRoad = validRoadPositions[Math.floor(Math.random() * validRoadPositions.length)];
-             beaconGroup.position.set(randomRoad.x, 0, randomRoad.z);
-        } else {
-             beaconGroup.position.set(playerGroup.position.x + 20, 0, playerGroup.position.z);
-        }
+        beaconGroup.position.set(playerGroup.position.x + 20, 0, playerGroup.position.z);
     }
 }
 
@@ -486,23 +434,65 @@ let cameraAngle = 0;
 const cameraRotationSpeed = 0.03;
 const currentLookAt = new THREE.Vector3(0, 0, 0);
 
+// --- JOYSTICK SETUP ---
+let joystickManager;
+let joystickInput = { x: 0, y: 0 };
+
+if (typeof nipplejs !== 'undefined') {
+    // Wait for DOM
+    setTimeout(() => {
+        const zone = document.getElementById('zone_joystick');
+        if (zone) {
+            joystickManager = nipplejs.create({
+                zone: zone,
+                mode: 'static',
+                position: { left: '50%', top: '50%' },
+                color: 'white',
+                size: 100
+            });
+
+            joystickManager.on('move', function (evt, data) {
+                if (data.vector) {
+                    joystickInput.y = data.vector.y; 
+                    joystickInput.x = data.vector.x; 
+                }
+            });
+
+            joystickManager.on('end', function (evt) {
+                joystickInput.x = 0;
+                joystickInput.y = 0;
+            });
+        }
+        
+        // JUMP BUTTON LOGIC
+        const jumpBtn = document.getElementById('mobile-jump');
+        if (jumpBtn) {
+            // Touch Start: Press Space
+            jumpBtn.addEventListener('touchstart', (e) => {
+                e.preventDefault(); 
+                keys.space = true;
+            }, { passive: false });
+
+            // Touch End: Release Space
+            jumpBtn.addEventListener('touchend', (e) => {
+                e.preventDefault();
+                keys.space = false;
+                jumpLocked = false; 
+            }, { passive: false });
+        }
+    }, 500);
+}
+
+
 window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
-    
-    // FIX: Prevent default browser actions (scrolling/button clicking) for Space
-    if (k === ' ') {
-        e.preventDefault(); 
-    }
-
+    if (k === ' ') e.preventDefault(); 
     if (keys.hasOwnProperty(k)) keys[k] = true;
     if (k === ' ') keys.space = true; 
     
     if (k === 'p') isPaused = !isPaused;
     if (k === 'm') isMapOpen = !isMapOpen;
-    if (k === 't') {
-        isTimerRunning = !isTimerRunning;
-        console.log("Timer Running:", isTimerRunning);
-    }
+    if (k === 't') { isTimerRunning = !isTimerRunning; }
 });
 window.addEventListener('keyup', (e) => {
     const k = e.key.toLowerCase();
@@ -548,19 +538,16 @@ function animate() {
             if (p.userData.active && playerGroup.position.distanceTo(p.position) < 2.5) {
                 if (p.userData.type === 'bike') {
                     hasBike = true;
-                    console.log("COLLECTED: Lime Bike!");
+                    // console.log("COLLECTED: Lime Bike!");
                 } 
                 else if (p.userData.type === 'drink') {
                     drinkTimer = DRINK_DURATION;
-                    console.log("COLLECTED: Monster Energy!");
                 }
                 else if (p.userData.type === 'armor_tee') {
                     armor += 2; 
-                    console.log("COLLECTED: Lion Tee! +2 Armor");
                 }
                 else if (p.userData.type === 'armor_belt') {
                     armor += 1; 
-                    console.log("COLLECTED: Belt! +1 Armor");
                 }
                 
                 scene.remove(p);
@@ -575,13 +562,26 @@ function animate() {
 
         if (gameActive && !isMapOpen) {
             
-            // 1. INPUT
+            // 1. INPUT (Mixed)
             let forward = 0;
+            
+            // Keyboard
             if (keys.w) forward = 1;
             if (keys.s) forward = -1;
             
+            // Joystick Override
+            if (Math.abs(joystickInput.y) > 0.1) {
+                forward = joystickInput.y > 0 ? 1 : -1;
+            }
+
+            // Rotation
             if (keys.a) cameraAngle += cameraRotationSpeed;
             if (keys.d) cameraAngle -= cameraRotationSpeed;
+            
+            // Joystick Turn
+            if (Math.abs(joystickInput.x) > 0.1) {
+                cameraAngle -= joystickInput.x * cameraRotationSpeed * 2.0;
+            }
 
             // 2. JUMP
             if (keys.space && isGrounded && !jumpLocked) {
@@ -593,8 +593,6 @@ function animate() {
                     const jumpAction = animationsMap.get('Jump');
                     jumpAction.reset().setLoop(THREE.LoopOnce).play();
                     jumpAction.clampWhenFinished = true;
-                    
-                    // Fixed Animation Speed Logic
                     jumpAction.timeScale = 1.3; 
 
                     if (currentAction && currentAction !== jumpAction) {
@@ -615,7 +613,6 @@ function animate() {
                 const moveVec = new THREE.Vector3(dirX * forward, 0, dirZ * forward).normalize();
 
                 if (canMove(playerGroup.position, moveVec)) {
-                    // DELTA TIME MOVEMENT
                     playerGroup.position.x += moveVec.x * currentSpeed * delta;
                     playerGroup.position.z += moveVec.z * currentSpeed * delta;
                 }
@@ -635,8 +632,6 @@ function animate() {
                     }
                 }
                 
-                // SPEED & ANIMATION SYNC FIX
-                // We normalize by BASE_SPEED so the animation multiplier stays around 1.0 - 1.5
                 if (isGrounded && currentAction === animationsMap.get('Run')) {
                     currentAction.timeScale = (currentSpeed / BASE_SPEED) * 1.2; 
                 }
@@ -750,10 +745,6 @@ window.debugSpawn = (forcedType) => {
 
     const playerPos = playerGroup.position;
     const pos = getAnywhereSpawnPoint(playerPos, 5, 20);
-    if (!pos) {
-        console.warn("No spawn spot found");
-        return;
-    }
+    if (!pos) return;
     createPowerupGroup(forcedType, pos);
-    console.log("Debug Spawn:", forcedType);
 };

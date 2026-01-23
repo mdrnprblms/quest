@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 // We stick to standard GLTFLoader
 // import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'; 
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 
 // --- LOADING SCREEN SETUP ---
 const loadingScreen = document.createElement('div');
@@ -16,6 +17,22 @@ loadingScreen.style.cssText = `
 `;
 loadingScreen.innerHTML = `<div>LOADING MAP...</div><div style="font-size:14px; margin-top:10px; opacity:0.7;">PLEASE WAIT</div>`;
 document.body.appendChild(loadingScreen);
+
+// Define your maps array near the top of the file (with other configs) or right here
+const maps = ['shoreditch.glb', 'archway.glb', 'carnabyst.glb'];
+let currentMapIndex = 0; // Make sure this variable exists in your state variables
+
+window.switchMap = () => {
+    // Cycle to the next map index
+    currentMapIndex = (currentMapIndex + 1) % maps.length;
+    currentMapName = maps[currentMapIndex];
+    
+    // Load the new map
+    loadLevel(currentMapName);
+    
+    // De-focus button so spacebar doesn't trigger it again
+    if (document.activeElement) document.activeElement.blur();
+};
 
 // --- MOBILE CONTROLS SETUP ---
 let joystickInput = { x: 0, y: 0 };
@@ -539,46 +556,58 @@ function updateWantedSystem() {
 function createNewEnemy() {
     console.log("Spawning NEW Police Officer");
     
-    const enemyWrapper = new THREE.Group();
-    const mesh = policeTemplate.clone();
+    if (!policeTemplate) {
+        console.warn("Police template not loaded yet");
+        return;
+    }
+
+    // 1. USE SKELETON UTILS TO FIX SQUASHING
+    const mesh = SkeletonUtils.clone(policeTemplate);
     
-    // FIX: Force mesh visibility (Culling fix)
-    mesh.traverse((child) => {
-        if (child.isMesh) {
-            child.frustumCulled = false; // Always render
+    // 2. APPLY SCALE & VISIBILITY SETTINGS
+    mesh.scale.set(4, 4, 4); 
+    mesh.position.y = 0.0; 
+    
+    // Force the browser to always draw the police, even if it thinks they are off-screen
+    mesh.traverse(o => { 
+        if (o.isMesh) {
+            o.frustumCulled = false; 
+            o.castShadow = true;
+            o.receiveShadow = true;
         }
     });
 
-    mesh.scale.set(3.5, 3.5, 3.5); 
-    mesh.position.y = 0.0; 
+    // 3. ADD TO SCENE
+    enemiesGroup.add(mesh);
     
-    enemyWrapper.add(mesh);
-    
-    // RED DEBUG BOX
-    const debugBox = new THREE.Mesh(
-        new THREE.BoxGeometry(2, 6, 2),
-        new THREE.MeshBasicMaterial({ color: 0xff0000, wireframe: true })
-    );
-    debugBox.position.y = 3.0;
-    enemyWrapper.add(debugBox);
+    // 4. POSITION
+    let pos = getAnywhereSpawnPoint(beaconGroup.position, 10, 50);
+    if (pos) {
+        mesh.position.copy(pos);
+    } else {
+        mesh.position.copy(beaconGroup.position);
+    }
 
-    enemiesGroup.add(enemyWrapper);
-    
+    // 5. ANIMATIONS (Your existing logic)
     const mixer = new THREE.AnimationMixer(mesh);
     const actions = {};
     
+    // Map your specific animation names
     const idleClip = THREE.AnimationClip.findByName(policeClips, 'Idle');
     const runningClip = THREE.AnimationClip.findByName(policeClips, 'Running'); 
     const fastRunClip = THREE.AnimationClip.findByName(policeClips, 'Fast Run');
     const hookClip = THREE.AnimationClip.findByName(policeClips, 'Hook');
+     const walkClip = THREE.AnimationClip.findByName(policeClips, 'Walk');
     
     if (idleClip) actions['Idle'] = mixer.clipAction(idleClip);
     
+    // Use 'Walk' for Patrol (slowed down)
     if (runningClip) {
-        actions['Patrol'] = mixer.clipAction(runningClip);
-        actions['Patrol'].timeScale = 0.6; 
+        actions['Patrol'] = mixer.clipAction(walkClip);
+        actions['Patrol'].timeScale = 1; 
     }
     
+    // Use 'Fast Run' for Chase (or fallback to Running)
     if (fastRunClip) {
         actions['Chase'] = mixer.clipAction(fastRunClip);
     } else if (runningClip) {
@@ -587,22 +616,18 @@ function createNewEnemy() {
     
     if (hookClip) actions['Hook'] = mixer.clipAction(hookClip);
     
+    // Start Idle
     const currentAction = actions['Idle'];
     if (currentAction) currentAction.play();
     
+    // Add the red/blue light
     const light = new THREE.PointLight(0xff0000, 2, 10);
     light.position.set(0, 4, 0);
-    enemyWrapper.add(light);
-    
-    let pos = getAnywhereSpawnPoint(beaconGroup.position, 10, 50);
-    if (pos) {
-        enemyWrapper.position.copy(pos);
-    } else {
-        enemyWrapper.position.copy(beaconGroup.position);
-    }
+    mesh.add(light);
 
+    // 6. SAVE TO ARRAY (Note: We track 'mesh' directly now, not a wrapper group)
     activeEnemies.push({
-        groupRef: enemyWrapper, 
+        groupRef: mesh, // Important: The AI logic uses 'groupRef', so we set it to our mesh
         mesh: mesh,
         mixer: mixer,
         actions: actions,

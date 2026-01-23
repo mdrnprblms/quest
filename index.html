@@ -5,7 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Mdrn Quest - Alpha</title>
     <style>
-        @font-face { font-family: 'Medieval'; src: url('./blackletter.ttf'); }
+        /* FIX: Ensure this matches your file case exactly */
+        @font-face { 
+            font-family: 'Medieval'; 
+            src: url('./blackletter.TTF') format('truetype'); 
+        }
 
         body { 
             margin: 0; 
@@ -82,20 +86,45 @@
             text-shadow: 4px 4px 0px #000;
         }
 
+        /* --- ZONE WARNING --- */
+        #zone-warning {
+            display: none;
+            position: absolute;
+            top: 20%;
+            width: 100%;
+            text-align: center;
+            font-family: 'Helvetica', sans-serif;
+            font-size: 24px;
+            font-weight: bold;
+            color: #ff0000;
+            text-shadow: 0 0 10px #ff0000;
+            letter-spacing: 4px;
+            z-index: 150;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 0.5; }
+            50% { opacity: 1.0; transform: scale(1.1); }
+            100% { opacity: 0.5; }
+        }
+
         /* --- MOBILE CONTROLS --- */
+        
+        /* Joystick Zone (LEFT SIDE) */
         #zone_joystick {
             position: absolute;
             bottom: 40px;
-            right: 40px;
+            left: 40px;     
             width: 150px;
             height: 150px;
             z-index: 150;
         }
 
+        /* Jump Button (RIGHT SIDE) */
         #mobile-jump {
             position: absolute;
             bottom: 40px;
-            left: 40px;
+            right: 40px;    
             width: 90px;
             height: 90px;
             background: rgba(50, 205, 50, 0.3);
@@ -156,6 +185,8 @@
 
         <div id="game-over">SHIFT ENDED</div>
     </div>
+    
+    <div id="zone-warning">⚠️ LEAVING SAFE ZONE ⚠️</div>
 
     <div id="zone_joystick"></div>
     <div id="mobile-jump">JUMP</div>

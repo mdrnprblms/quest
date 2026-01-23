@@ -44,13 +44,21 @@ setTimeout(() => {
 // --- 1. CONFIGURATION ---
 const START_TIME = 90.0;    
 const TIME_BONUS = 30.0;    
-const BASE_SPEED = 20.0; // Updated to 20 for better speed
+const BASE_SPEED = 20.0; 
 const BIKE_MULTIPLIER = 1.8; 
 const DRINK_MULTIPLIER = 1.4; 
 const DRINK_DURATION = 15.0;
 const POWERUP_SPAWN_RATE = 5.0; 
 
-const MAP_LIMIT = 2000;     
+// MAP LIMITS & ZONES
+const MAP_LIMIT = 2000;
+const ZONE_RADIUS = 450;    // Invisible wall
+const WARNING_RADIUS = 400; // Warning UI
+
+// ENEMY CONFIG
+const ENEMY_SPEED = 19.0;    
+const ENEMY_CHASE_RADIUS = 150.0; 
+const ENEMY_CATCH_RADIUS = 3.5; // Increased catch radius slightly due to size
 
 // STATE
 let score = 0;
@@ -63,6 +71,7 @@ let hasBike = false;
 let drinkTimer = 0.0; 
 let isMapOpen = false; 
 let spawnTimer = 0; 
+let isBusted = false;
 
 // PHYSICS STATE
 let verticalVelocity = 0;
@@ -82,7 +91,7 @@ let lionTeeGreyTemplate = null;
 let beltTemplate = null;         
 
 // MAP STATE
-let currentMapName = 'shoreditch.glb'; 
+let currentMapName = 'shoreditch.glb'; // Restored to your working map name
 
 // UI HELPERS
 function updateUI() {
@@ -120,7 +129,21 @@ function updateUI() {
     }
     
     if(uiPause) uiPause.style.display = isPaused ? "block" : "none";
-    if(uiGameOver && !gameActive) uiGameOver.style.display = "block";
+    
+    if(uiGameOver) {
+        if (!gameActive) {
+            uiGameOver.style.display = "block";
+            if (isBusted) {
+                uiGameOver.innerText = "BUSTED";
+                uiGameOver.style.color = "#0088ff"; 
+            } else {
+                uiGameOver.innerText = "SHIFT ENDED";
+                uiGameOver.style.color = "#ff3333";
+            }
+        } else {
+            uiGameOver.style.display = "none";
+        }
+    }
 }
 
 // --- 2. SCENE ---
@@ -191,11 +214,20 @@ initEnvironment();
 
 // --- 4. ASSETS ---
 const loader = new GLTFLoader();
+
 const cityGroup = new THREE.Group();
 scene.add(cityGroup);
 
 const playerGroup = new THREE.Group();
 scene.add(playerGroup);
+
+// --- ENEMY SETUP ---
+const enemyGroup = new THREE.Group();
+scene.add(enemyGroup);
+
+const enemyLight = new THREE.PointLight(0xff0000, 2, 10);
+enemyLight.position.set(0, 4, 0);
+enemyGroup.add(enemyLight);
 
 const playerFillLight = new THREE.PointLight(0xffffff, 1.5, 10);
 playerFillLight.position.set(0, 2, 2); 
@@ -337,6 +369,46 @@ loader.load('playermodel.glb', (gltf) => {
 
 }, undefined, (err) => console.error("Player Model Error:", err));
 
+
+// --- ENEMY LOADER (POLICE) ---
+let enemyMesh = null;
+let enemyMixer = null;
+let enemyActions = {};
+let enemyCurrentAction = null;
+
+loader.load('police.glb', (gltf) => {
+    enemyMesh = gltf.scene;
+    // UPDATED SCALE to 4.0
+    enemyMesh.scale.set(4.0, 4.0, 4.0); 
+    
+    enemyMesh.traverse(o => { 
+        if (o.isMesh) { 
+            o.castShadow = true; 
+            o.receiveShadow = true;
+        } 
+    });
+
+    enemyGroup.add(enemyMesh);
+    
+    enemyMixer = new THREE.AnimationMixer(enemyMesh);
+    const clips = gltf.animations;
+    
+    const idleClip = THREE.AnimationClip.findByName(clips, 'Idle');
+    const runClip = THREE.AnimationClip.findByName(clips, 'Running'); 
+    const hookClip = THREE.AnimationClip.findByName(clips, 'Hook');
+    
+    if (idleClip) enemyActions['Idle'] = enemyMixer.clipAction(idleClip);
+    if (runClip) enemyActions['Run'] = enemyMixer.clipAction(runClip);
+    if (hookClip) enemyActions['Hook'] = enemyMixer.clipAction(hookClip);
+    
+    enemyCurrentAction = enemyActions['Idle'];
+    if (enemyCurrentAction) enemyCurrentAction.play();
+    
+    spawnEnemy();
+
+}, undefined, (err) => console.error("Police Model Error:", err));
+
+
 // --- POWERUP ASSETS ---
 loader.load('limebike.glb', (gltf) => {
     bikeTemplate = gltf.scene;
@@ -439,6 +511,21 @@ function spawnBeacon() {
     } else {
         beaconGroup.position.set(playerGroup.position.x + 20, 0, playerGroup.position.z);
     }
+    spawnEnemy();
+}
+
+function spawnEnemy() {
+    if (!enemyMesh) return;
+    
+    let pos = getAnywhereSpawnPoint(beaconGroup.position, 10, 50);
+    
+    if (pos) {
+        enemyGroup.position.copy(pos);
+        enemyGroup.position.y += 1.0; 
+        console.log("Enemy spawned guarding beacon");
+    } else {
+        enemyGroup.position.set(beaconGroup.position.x + 5, beaconGroup.position.y, beaconGroup.position.z + 5);
+    }
 }
 
 function spawnPowerup() {
@@ -516,19 +603,14 @@ const currentLookAt = new THREE.Vector3(0, 0, 0);
 window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
     
-    // FIX: Prevent scrolling with Space
-    if (k === ' ') {
-        e.preventDefault(); 
-    }
+    if (k === ' ') { e.preventDefault(); }
 
     if (keys.hasOwnProperty(k)) keys[k] = true;
     if (k === ' ') keys.space = true; 
     
     if (k === 'p') isPaused = !isPaused;
     if (k === 'm') isMapOpen = !isMapOpen;
-    if (k === 't') {
-        isTimerRunning = !isTimerRunning;
-    }
+    if (k === 't') { isTimerRunning = !isTimerRunning; }
 });
 window.addEventListener('keyup', (e) => {
     const k = e.key.toLowerCase();
@@ -562,7 +644,67 @@ function animate() {
         if (timeLeft <= 0) {
             timeLeft = 0;
             gameActive = false;
+            isBusted = false;
             if (currentAction) currentAction.stop();
+        }
+    }
+
+    // --- ENEMY AI LOGIC ---
+    if (gameActive && enemyMesh && enemyMixer) {
+        enemyMixer.update(delta);
+        
+        const distToPlayer = enemyGroup.position.distanceTo(playerGroup.position);
+        let isChasing = false;
+        
+        // 1. CHECK CHASE CONDITION
+        if (distToPlayer < ENEMY_CHASE_RADIUS) {
+            isChasing = true;
+            
+            enemyGroup.lookAt(playerGroup.position.x, enemyGroup.position.y, playerGroup.position.z);
+            
+            const enemyDir = new THREE.Vector3()
+                .subVectors(playerGroup.position, enemyGroup.position)
+                .normalize();
+                
+            enemyGroup.position.addScaledVector(enemyDir, ENEMY_SPEED * delta);
+            
+            raycaster.set(new THREE.Vector3(enemyGroup.position.x, 300, enemyGroup.position.z), downVector);
+            const hits = raycaster.intersectObjects(colliderMeshes, false);
+            if (hits.length > 0) {
+                enemyGroup.position.y = THREE.MathUtils.lerp(enemyGroup.position.y, hits[0].point.y + 0.5, 5 * delta);
+            }
+
+            // 2. CHECK CATCH CONDITION
+            if (distToPlayer < ENEMY_CATCH_RADIUS) {
+                console.log("BUSTED BY POLICE!");
+                gameActive = false;
+                isBusted = true;
+                
+                if (currentAction) currentAction.stop();
+                
+                if (enemyActions['Hook'] && enemyCurrentAction !== enemyActions['Hook']) {
+                    enemyActions['Hook'].reset().play();
+                    if (enemyCurrentAction) enemyCurrentAction.stop();
+                    enemyCurrentAction = enemyActions['Hook'];
+                }
+            }
+        }
+        
+        // 3. ANIMATION STATE MACHINE
+        if (gameActive) {
+            if (isChasing) {
+                if (enemyActions['Run'] && enemyCurrentAction !== enemyActions['Run']) {
+                    enemyActions['Run'].reset().play();
+                    if (enemyCurrentAction) enemyCurrentAction.fadeOut(0.2);
+                    enemyCurrentAction = enemyActions['Run'];
+                }
+            } else {
+                if (enemyActions['Idle'] && enemyCurrentAction !== enemyActions['Idle']) {
+                    enemyActions['Idle'].reset().play();
+                    if (enemyCurrentAction) enemyCurrentAction.fadeOut(0.2);
+                    enemyCurrentAction = enemyActions['Idle'];
+                }
+            }
         }
     }
 
@@ -702,7 +844,25 @@ function animate() {
                 }
             }
             
-            // SMART RESPAWN
+            // --- NEW: INVISIBLE WALL + ZONE CHECK ---
+            const distFromCenter = playerGroup.position.distanceTo(new THREE.Vector3(0,0,0));
+            const warningUI = document.getElementById('zone-warning');
+            
+            // 1. Warning UI
+            if (distFromCenter > WARNING_RADIUS) {
+                if(warningUI) warningUI.style.display = 'block';
+            } else {
+                if(warningUI) warningUI.style.display = 'none';
+            }
+            
+            // 2. Invisible Wall (Clamp Position)
+            if (distFromCenter > ZONE_RADIUS) {
+                 const clampedPos = playerGroup.position.clone().normalize().multiplyScalar(ZONE_RADIUS);
+                 playerGroup.position.x = clampedPos.x;
+                 playerGroup.position.z = clampedPos.z;
+            }
+            
+            // 3. Fallback (Death)
             if (playerGroup.position.y < -50) {
                 console.log("Player fell out of world. Respawning...");
                 let safeSpot = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, 200);
@@ -724,7 +884,7 @@ function animate() {
             }
         }
 
-        // CAMERA
+        // CAMERA & FOG LOGIC (Atmosphere)
         let targetPos, targetLook;
         let targetFogNear, targetFogFar;
 
@@ -739,8 +899,16 @@ function animate() {
             const offset = new THREE.Vector3(0, 6, -10).applyAxisAngle(new THREE.Vector3(0,1,0), cameraAngle);
             targetPos = playerGroup.position.clone().add(offset);
             targetLook = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 0));
-            targetFogNear = 30;
-            targetFogFar = 120;
+            
+            const dist = playerGroup.position.distanceTo(new THREE.Vector3(0,0,0));
+            if (dist > WARNING_RADIUS) {
+                 targetFogNear = 10;
+                 targetFogFar = 60; 
+            } else {
+                 targetFogNear = 30;
+                 targetFogFar = 120;
+            }
+
             beaconGroup.scale.set(1, 1, 1);
             arrowMesh.scale.set(1, 1, 1);
         }

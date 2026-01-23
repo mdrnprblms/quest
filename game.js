@@ -50,15 +50,20 @@ const DRINK_MULTIPLIER = 1.4;
 const DRINK_DURATION = 15.0;
 const POWERUP_SPAWN_RATE = 5.0; 
 
-// MAP LIMITS & ZONES
-const MAP_LIMIT = 2000;
-const ZONE_RADIUS = 450;    // Invisible wall
-const WARNING_RADIUS = 400; // Warning UI
+// MAP LIMITS (Removed the circular cage)
+const MAP_LIMIT = 4000; // Increased to ensure you never hit the hard limit
 
-// ENEMY CONFIG
-const ENEMY_SPEED = 19.0;    
-const ENEMY_CHASE_RADIUS = 150.0; 
-const ENEMY_CATCH_RADIUS = 3.5; // Increased catch radius slightly due to size
+// ENEMY AI CONFIG (STEALTH)
+const ENEMY_RUN_SPEED = 19.0;
+const ENEMY_WALK_SPEED = 6.0;      
+const ENEMY_VISION_DIST = 60.0;    
+const ENEMY_HEARING_DIST = 10.0;   
+const ENEMY_FOV = 135;             
+const ENEMY_CATCH_RADIUS = 3.5; 
+
+// WANTED LEVEL CONFIG
+const WANTED_LEVEL_1_SCORE = 3; 
+const WANTED_LEVEL_2_SCORE = 5; 
 
 // STATE
 let score = 0;
@@ -84,14 +89,21 @@ const JUMP_FORCE = 30.0;
 let validRoadPositions = []; 
 let colliderMeshes = []; 
 let powerups = []; 
+
+// Templates
 let bikeTemplate = null; 
 let drinkTemplate = null;
 let lionTeeTemplate = null;      
 let lionTeeGreyTemplate = null;
-let beltTemplate = null;         
+let beltTemplate = null; 
+let policeTemplate = null;       
+let policeClips = null;          
+
+// ACTIVE ENEMIES LIST
+let activeEnemies = [];          
 
 // MAP STATE
-let currentMapName = 'shoreditch.glb'; // Restored to your working map name
+let currentMapName = 'shoreditch.glb'; 
 
 // UI HELPERS
 function updateUI() {
@@ -102,13 +114,22 @@ function updateUI() {
     const uiDrink = document.getElementById('status-drink');
     const uiBike = document.getElementById('status-bike');
     const uiDrinkTimer = document.getElementById('drink-timer');
+    
+    // Hide the annoying zone warning if it exists
+    const warningUI = document.getElementById('zone-warning');
+    if (warningUI) warningUI.style.display = 'none';
 
     if(uiScore) {
         let status = "WALKING";
         if (hasBike && drinkTimer > 0) status = "STACKING IT"; 
         else if (hasBike) status = "ON BIKE";
         else if (drinkTimer > 0) status = "SUGAR RUSH";
-        uiScore.innerText = `${score} | 🛡️ ${armor} | ${status}`;
+        
+        let wantedStars = "";
+        if (score >= WANTED_LEVEL_2_SCORE) wantedStars = "★★";
+        else if (score >= WANTED_LEVEL_1_SCORE) wantedStars = "★";
+        
+        uiScore.innerText = `${score} | 🛡️ ${armor} | ${status} ${wantedStars}`;
     }
 
     if(uiTimer) {
@@ -221,13 +242,9 @@ scene.add(cityGroup);
 const playerGroup = new THREE.Group();
 scene.add(playerGroup);
 
-// --- ENEMY SETUP ---
-const enemyGroup = new THREE.Group();
-scene.add(enemyGroup);
-
-const enemyLight = new THREE.PointLight(0xff0000, 2, 10);
-enemyLight.position.set(0, 4, 0);
-enemyGroup.add(enemyLight);
+// --- ENEMY GROUP ---
+const enemiesGroup = new THREE.Group();
+scene.add(enemiesGroup);
 
 const playerFillLight = new THREE.PointLight(0xffffff, 1.5, 10);
 playerFillLight.position.set(0, 2, 2); 
@@ -261,18 +278,20 @@ playerGroup.add(arrowMesh);
 function loadLevel(mapName) {
     console.log("Loading Map:", mapName);
     
-    // 1. Cleanup Old Map
     while(cityGroup.children.length > 0){ 
         cityGroup.remove(cityGroup.children[0]); 
     }
     colliderMeshes = [];
     validRoadPositions = [];
     
-    // Clear Powerups
     powerups.forEach(p => scene.remove(p));
     powerups = [];
+    
+    activeEnemies.forEach(e => {
+        enemiesGroup.remove(e.mesh);
+    });
+    activeEnemies = [];
 
-    // 2. Load New Map
     loader.load(mapName, (gltf) => {
         const map = gltf.scene;
         map.scale.set(3, 3, 3);
@@ -285,7 +304,13 @@ function loadLevel(mapName) {
 
         map.traverse((child) => {
             if (child.isMesh) {
-                if (child.name !== "IGNORE_ME") {
+                // NEW FEATURE: Custom Border Detection
+                // If you name a mesh "Border" in your 3D file, it becomes an invisible wall
+                if (child.name.includes("Border")) {
+                    child.visible = false; // Hide it
+                    colliderMeshes.push(child); // Collide with it
+                } 
+                else if (child.name !== "IGNORE_ME") {
                     child.castShadow = true;
                     child.receiveShadow = true;
                     child.name = "CITY_MESH"; 
@@ -302,7 +327,6 @@ function loadLevel(mapName) {
         
         cityGroup.add(map);
 
-        // 3. Update Physics & Spawn
         cityGroup.updateMatrixWorld(true);
         let startPos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, 100);
         if (!startPos) startPos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 100, 500);
@@ -325,7 +349,6 @@ function loadLevel(mapName) {
     });
 }
 
-// Initial Load
 loadLevel(currentMapName);
 
 // --- PLAYER LOADER ---
@@ -370,42 +393,20 @@ loader.load('playermodel.glb', (gltf) => {
 }, undefined, (err) => console.error("Player Model Error:", err));
 
 
-// --- ENEMY LOADER (POLICE) ---
-let enemyMesh = null;
-let enemyMixer = null;
-let enemyActions = {};
-let enemyCurrentAction = null;
-
+// --- ENEMY LOADER ---
 loader.load('police.glb', (gltf) => {
-    enemyMesh = gltf.scene;
-    // UPDATED SCALE to 4.0
-    enemyMesh.scale.set(4.0, 4.0, 4.0); 
+    policeTemplate = gltf.scene;
+    policeTemplate.scale.set(4.0, 4.0, 4.0); 
     
-    enemyMesh.traverse(o => { 
+    policeTemplate.traverse(o => { 
         if (o.isMesh) { 
             o.castShadow = true; 
             o.receiveShadow = true;
         } 
     });
-
-    enemyGroup.add(enemyMesh);
     
-    enemyMixer = new THREE.AnimationMixer(enemyMesh);
-    const clips = gltf.animations;
-    
-    const idleClip = THREE.AnimationClip.findByName(clips, 'Idle');
-    const runClip = THREE.AnimationClip.findByName(clips, 'Running'); 
-    const hookClip = THREE.AnimationClip.findByName(clips, 'Hook');
-    
-    if (idleClip) enemyActions['Idle'] = enemyMixer.clipAction(idleClip);
-    if (runClip) enemyActions['Run'] = enemyMixer.clipAction(runClip);
-    if (hookClip) enemyActions['Hook'] = enemyMixer.clipAction(hookClip);
-    
-    enemyCurrentAction = enemyActions['Idle'];
-    if (enemyCurrentAction) enemyCurrentAction.play();
-    
-    spawnEnemy();
-
+    policeClips = gltf.animations;
+    console.log("Police Template Loaded");
 }, undefined, (err) => console.error("Police Model Error:", err));
 
 
@@ -413,12 +414,7 @@ loader.load('police.glb', (gltf) => {
 loader.load('limebike.glb', (gltf) => {
     bikeTemplate = gltf.scene;
     bikeTemplate.scale.set(2.5, 2.5, 2.5);
-    bikeTemplate.traverse(o => { 
-        if(o.isMesh) { 
-            o.castShadow = true; o.receiveShadow = true;
-            if (o.material) { o.material.metalness = 0.0; o.material.roughness = 0.6; if (o.material.color) o.material.color.set(0xffffff); }
-        }
-    });
+    bikeTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
 });
 
 loader.load('monster_zero_ultra.glb', (gltf) => {
@@ -430,34 +426,19 @@ loader.load('monster_zero_ultra.glb', (gltf) => {
 loader.load('liontee.glb', (gltf) => {
     lionTeeTemplate = gltf.scene;
     lionTeeTemplate.scale.set(1.5, 1.5, 1.5); 
-    lionTeeTemplate.traverse(o => { 
-        if(o.isMesh) { 
-            o.castShadow = true; o.receiveShadow = true; 
-            if (o.material) { o.material.metalness = 0.0; o.material.roughness = 0.8; if (o.material.color) o.material.color.set(0xffffff); }
-        }
-    });
+    lionTeeTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
 });
 
 loader.load('lionteegrey.glb', (gltf) => {
     lionTeeGreyTemplate = gltf.scene;
     lionTeeGreyTemplate.scale.set(1.5, 1.5, 1.5);
-    lionTeeGreyTemplate.traverse(o => { 
-        if(o.isMesh) { 
-            o.castShadow = true; o.receiveShadow = true; 
-            if (o.material) { o.material.metalness = 0.0; o.material.roughness = 0.8; if (o.material.color) o.material.color.set(0xffffff); }
-        }
-    });
+    lionTeeGreyTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
 });
 
 loader.load('belt.glb', (gltf) => {
     beltTemplate = gltf.scene;
     beltTemplate.scale.set(2.0, 2.0, 2.0); 
-    beltTemplate.traverse(o => { 
-        if(o.isMesh) { 
-            o.castShadow = true; o.receiveShadow = true; 
-            if (o.material) { o.material.metalness = 0.0; o.material.roughness = 0.8; if (o.material.color) o.material.color.set(0xffffff); }
-        }
-    });
+    beltTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
 });
 
 
@@ -469,10 +450,7 @@ function canMove(position, direction) {
     const rayStart = position.clone();
     rayStart.y += 1.5; 
     raycaster.set(rayStart, direction);
-    
-    // Uses cached collider array
     const intersects = raycaster.intersectObjects(colliderMeshes, false); 
-
     if (intersects.length > 0) {
         if (intersects[0].distance < 1.5) return false; 
     }
@@ -511,21 +489,80 @@ function spawnBeacon() {
     } else {
         beaconGroup.position.set(playerGroup.position.x + 20, 0, playerGroup.position.z);
     }
-    spawnEnemy();
+    updateWantedSystem();
 }
 
-function spawnEnemy() {
-    if (!enemyMesh) return;
+function updateWantedSystem() {
+    if (!policeTemplate || !policeClips) return;
+
+    let targetEnemyCount = 0;
+    if (score >= WANTED_LEVEL_2_SCORE) {
+        targetEnemyCount = 2; 
+    } else if (score >= WANTED_LEVEL_1_SCORE) {
+        targetEnemyCount = 1; 
+    }
+    
+    if (activeEnemies.length < targetEnemyCount) {
+        const toSpawn = targetEnemyCount - activeEnemies.length;
+        for (let i = 0; i < toSpawn; i++) {
+            createNewEnemy();
+        }
+    }
+    
+    activeEnemies.forEach((enemy) => {
+        enemy.isChasing = false; 
+        let pos = getAnywhereSpawnPoint(beaconGroup.position, 10, 80);
+        if (pos) {
+            enemy.patrolTarget = pos;
+        } else {
+            enemy.patrolTarget = beaconGroup.position.clone();
+        }
+    });
+}
+
+function createNewEnemy() {
+    console.log("Spawning NEW Police Officer");
+    
+    const mesh = policeTemplate.clone();
+    const mixer = new THREE.AnimationMixer(mesh);
+    const actions = {};
+    
+    const idleClip = THREE.AnimationClip.findByName(policeClips, 'Idle');
+    const runClip = THREE.AnimationClip.findByName(policeClips, 'Running'); 
+    const walkClip = THREE.AnimationClip.findByName(policeClips, 'Walk'); 
+    const hookClip = THREE.AnimationClip.findByName(policeClips, 'Hook');
+    
+    if (idleClip) actions['Idle'] = mixer.clipAction(idleClip);
+    if (runClip) actions['Run'] = mixer.clipAction(runClip);
+    if (walkClip) actions['Walk'] = mixer.clipAction(walkClip);
+    if (hookClip) actions['Hook'] = mixer.clipAction(hookClip);
+    
+    const currentAction = actions['Idle'];
+    if (currentAction) currentAction.play();
+    
+    const light = new THREE.PointLight(0xff0000, 2, 10);
+    light.position.set(0, 4, 0);
+    mesh.add(light);
+    
+    enemiesGroup.add(mesh);
     
     let pos = getAnywhereSpawnPoint(beaconGroup.position, 10, 50);
-    
     if (pos) {
-        enemyGroup.position.copy(pos);
-        enemyGroup.position.y += 1.0; 
-        console.log("Enemy spawned guarding beacon");
+        mesh.position.copy(pos);
+        mesh.position.y += 1.0;
     } else {
-        enemyGroup.position.set(beaconGroup.position.x + 5, beaconGroup.position.y, beaconGroup.position.z + 5);
+        mesh.position.copy(beaconGroup.position);
     }
+
+    activeEnemies.push({
+        mesh: mesh,
+        mixer: mixer,
+        actions: actions,
+        currentAction: currentAction,
+        state: 'PATROL',  
+        patrolTarget: null,
+        patrolTimer: 0
+    });
 }
 
 function spawnPowerup() {
@@ -602,12 +639,9 @@ const currentLookAt = new THREE.Vector3(0, 0, 0);
 
 window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
-    
     if (k === ' ') { e.preventDefault(); }
-
     if (keys.hasOwnProperty(k)) keys[k] = true;
     if (k === ' ') keys.space = true; 
-    
     if (k === 'p') isPaused = !isPaused;
     if (k === 'm') isMapOpen = !isMapOpen;
     if (k === 't') { isTimerRunning = !isTimerRunning; }
@@ -649,63 +683,123 @@ function animate() {
         }
     }
 
-    // --- ENEMY AI LOGIC ---
-    if (gameActive && enemyMesh && enemyMixer) {
-        enemyMixer.update(delta);
-        
-        const distToPlayer = enemyGroup.position.distanceTo(playerGroup.position);
-        let isChasing = false;
-        
-        // 1. CHECK CHASE CONDITION
-        if (distToPlayer < ENEMY_CHASE_RADIUS) {
-            isChasing = true;
+    // --- STEALTH & PATROL AI LOGIC ---
+    if (gameActive) {
+        activeEnemies.forEach((enemy) => {
+            if (enemy.mixer) enemy.mixer.update(delta);
             
-            enemyGroup.lookAt(playerGroup.position.x, enemyGroup.position.y, playerGroup.position.z);
+            const distToPlayer = enemy.mesh.position.distanceTo(playerGroup.position);
             
-            const enemyDir = new THREE.Vector3()
-                .subVectors(playerGroup.position, enemyGroup.position)
-                .normalize();
+            // --- 1. SENSORY CHECK (Sight & Sound) ---
+            let detected = false;
+            
+            // A. Sound (Proximity)
+            if (distToPlayer < ENEMY_HEARING_DIST) {
+                detected = true;
+            } 
+            // B. Sight (Vision Cone)
+            else if (distToPlayer < ENEMY_VISION_DIST) {
+                // Get enemy forward vector
+                const enemyFwd = new THREE.Vector3(0, 0, 1);
+                enemyFwd.applyQuaternion(enemy.mesh.quaternion).normalize();
                 
-            enemyGroup.position.addScaledVector(enemyDir, ENEMY_SPEED * delta);
-            
-            raycaster.set(new THREE.Vector3(enemyGroup.position.x, 300, enemyGroup.position.z), downVector);
-            const hits = raycaster.intersectObjects(colliderMeshes, false);
-            if (hits.length > 0) {
-                enemyGroup.position.y = THREE.MathUtils.lerp(enemyGroup.position.y, hits[0].point.y + 0.5, 5 * delta);
+                // Get vector to player
+                const toPlayer = new THREE.Vector3().subVectors(playerGroup.position, enemy.mesh.position).normalize();
+                
+                // Calculate Angle
+                const angleRad = enemyFwd.angleTo(toPlayer);
+                const angleDeg = THREE.MathUtils.radToDeg(angleRad);
+                
+                // Check FOV (Half of 135 degrees is 67.5)
+                if (angleDeg < (ENEMY_FOV / 2)) {
+                    detected = true;
+                }
             }
 
-            // 2. CHECK CATCH CONDITION
-            if (distToPlayer < ENEMY_CATCH_RADIUS) {
-                console.log("BUSTED BY POLICE!");
-                gameActive = false;
-                isBusted = true;
+            // --- 2. STATE MACHINE ---
+            if (detected) {
+                enemy.state = 'CHASE';
+            } else if (enemy.state === 'CHASE' && distToPlayer > ENEMY_VISION_DIST * 1.5) {
+                // Lost aggro
+                enemy.state = 'PATROL';
+                enemy.patrolTarget = null; // Pick new target
+            }
+
+            // --- 3. EXECUTE STATE ---
+            
+            if (enemy.state === 'CHASE') {
+                // Look & Move to Player
+                enemy.mesh.lookAt(playerGroup.position.x, enemy.mesh.position.y, playerGroup.position.z);
+                const enemyDir = new THREE.Vector3().subVectors(playerGroup.position, enemy.mesh.position).normalize();
+                enemy.mesh.position.addScaledVector(enemyDir, ENEMY_RUN_SPEED * delta);
                 
-                if (currentAction) currentAction.stop();
+                // Catch Logic
+                if (distToPlayer < ENEMY_CATCH_RADIUS) {
+                    gameActive = false;
+                    isBusted = true;
+                    if (currentAction) currentAction.stop();
+                    // Play Hook
+                    if (enemy.actions['Hook'] && enemy.currentAction !== enemy.actions['Hook']) {
+                        enemy.actions['Hook'].reset().play();
+                        if (enemy.currentAction) enemy.currentAction.stop();
+                        enemy.currentAction = enemy.actions['Hook'];
+                    }
+                }
                 
-                if (enemyActions['Hook'] && enemyCurrentAction !== enemyActions['Hook']) {
-                    enemyActions['Hook'].reset().play();
-                    if (enemyCurrentAction) enemyCurrentAction.stop();
-                    enemyCurrentAction = enemyActions['Hook'];
+                // Animation: RUN
+                if (enemy.actions['Run'] && enemy.currentAction !== enemy.actions['Run']) {
+                    enemy.actions['Run'].reset().play();
+                    if (enemy.currentAction) enemy.currentAction.fadeOut(0.2);
+                    enemy.currentAction = enemy.actions['Run'];
+                }
+            } 
+            
+            else if (enemy.state === 'PATROL') {
+                // Patrol Logic
+                if (!enemy.patrolTarget) {
+                    // Pick new random point near self (wandering)
+                    let p = getAnywhereSpawnPoint(enemy.mesh.position, 10, 40);
+                    if (p) enemy.patrolTarget = p;
+                    enemy.patrolTimer = 0;
+                }
+                
+                const distToTarget = enemy.mesh.position.distanceTo(enemy.patrolTarget);
+                
+                if (distToTarget < 2.0) {
+                    // Reached target, wait a bit
+                    enemy.patrolTimer += delta;
+                    if (enemy.patrolTimer > 2.0) {
+                        enemy.patrolTarget = null; // Trigger new target pick
+                    }
+                    
+                    // Animation: IDLE
+                    if (enemy.actions['Idle'] && enemy.currentAction !== enemy.actions['Idle']) {
+                        enemy.actions['Idle'].reset().play();
+                        if (enemy.currentAction) enemy.currentAction.fadeOut(0.2);
+                        enemy.currentAction = enemy.actions['Idle'];
+                    }
+                } else {
+                    // Move to target
+                    enemy.mesh.lookAt(enemy.patrolTarget.x, enemy.mesh.position.y, enemy.patrolTarget.z);
+                    const walkDir = new THREE.Vector3().subVectors(enemy.patrolTarget, enemy.mesh.position).normalize();
+                    enemy.mesh.position.addScaledVector(walkDir, ENEMY_WALK_SPEED * delta);
+                    
+                    // Animation: WALK
+                    if (enemy.actions['Walk'] && enemy.currentAction !== enemy.actions['Walk']) {
+                        enemy.actions['Walk'].reset().play();
+                        if (enemy.currentAction) enemy.currentAction.fadeOut(0.2);
+                        enemy.currentAction = enemy.actions['Walk'];
+                    }
                 }
             }
-        }
-        
-        // 3. ANIMATION STATE MACHINE
-        if (gameActive) {
-            if (isChasing) {
-                if (enemyActions['Run'] && enemyCurrentAction !== enemyActions['Run']) {
-                    enemyActions['Run'].reset().play();
-                    if (enemyCurrentAction) enemyCurrentAction.fadeOut(0.2);
-                    enemyCurrentAction = enemyActions['Run'];
-                }
-            } else {
-                if (enemyActions['Idle'] && enemyCurrentAction !== enemyActions['Idle']) {
-                    enemyActions['Idle'].reset().play();
-                    if (enemyCurrentAction) enemyCurrentAction.fadeOut(0.2);
-                    enemyCurrentAction = enemyActions['Idle'];
-                }
+
+            // --- 4. GROUND SNAPPING (Always Active) ---
+            raycaster.set(new THREE.Vector3(enemy.mesh.position.x, 300, enemy.mesh.position.z), downVector);
+            const hits = raycaster.intersectObjects(colliderMeshes, false);
+            if (hits.length > 0) {
+                enemy.mesh.position.y = THREE.MathUtils.lerp(enemy.mesh.position.y, hits[0].point.y + 0.5, 5 * delta);
             }
-        }
+        });
     }
 
     if (gameActive) {
@@ -844,25 +938,8 @@ function animate() {
                 }
             }
             
-            // --- NEW: INVISIBLE WALL + ZONE CHECK ---
-            const distFromCenter = playerGroup.position.distanceTo(new THREE.Vector3(0,0,0));
-            const warningUI = document.getElementById('zone-warning');
-            
-            // 1. Warning UI
-            if (distFromCenter > WARNING_RADIUS) {
-                if(warningUI) warningUI.style.display = 'block';
-            } else {
-                if(warningUI) warningUI.style.display = 'none';
-            }
-            
-            // 2. Invisible Wall (Clamp Position)
-            if (distFromCenter > ZONE_RADIUS) {
-                 const clampedPos = playerGroup.position.clone().normalize().multiplyScalar(ZONE_RADIUS);
-                 playerGroup.position.x = clampedPos.x;
-                 playerGroup.position.z = clampedPos.z;
-            }
-            
-            // 3. Fallback (Death)
+            // --- NO MORE ARTIFICIAL LIMITS ---
+            // Just one check: did you fall off the map?
             if (playerGroup.position.y < -50) {
                 console.log("Player fell out of world. Respawning...");
                 let safeSpot = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, 200);
@@ -900,14 +977,9 @@ function animate() {
             targetPos = playerGroup.position.clone().add(offset);
             targetLook = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 0));
             
-            const dist = playerGroup.position.distanceTo(new THREE.Vector3(0,0,0));
-            if (dist > WARNING_RADIUS) {
-                 targetFogNear = 10;
-                 targetFogFar = 60; 
-            } else {
-                 targetFogNear = 30;
-                 targetFogFar = 120;
-            }
+            // Removed Dynamic Fog that hid the edge
+            targetFogNear = 30;
+            targetFogFar = 120;
 
             beaconGroup.scale.set(1, 1, 1);
             arrowMesh.scale.set(1, 1, 1);

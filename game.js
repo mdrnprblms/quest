@@ -225,7 +225,7 @@ composer.addPass(renderPass);
 
 const bokehPass = new BokehPass(scene, camera, {
     focus: 10.0,       // Distance to focus on (will update dynamically)
-    aperture: 0.0001,  // Blur strength (0.0001 is subtle, 0.0002 is strong)
+    aperture: 0.00005,  // Blur strength (0.0001 is subtle, 0.0002 is strong)
     maxblur: 0.01,     // Max blur level
     width: window.innerWidth,
     height: window.innerHeight
@@ -1091,12 +1091,19 @@ window.debugSpawn = (forcedType) => {
     createPowerupGroup(forcedType, pos);
 };
 
+// Define your list of maps
+const mapList = ['shoreditch.glb', 'archway.glb', 'carnabyst.glb'];
+
 window.switchMap = () => {
-    if (currentMapName === 'shoreditch.glb') {
-        currentMapName = 'archway.glb';
-    } else {
-        currentMapName = 'shoreditch.glb';
-    }
+    // 1. Find where we are in the list
+    let currentIndex = mapList.indexOf(currentMapName);
+    
+    // 2. Move to next one (loop back to 0 if at end)
+    let nextIndex = (currentIndex + 1) % mapList.length;
+    
+    // 3. Set and Load
+    currentMapName = mapList[nextIndex];
     loadLevel(currentMapName);
+    
     if (document.activeElement) document.activeElement.blur();
 };

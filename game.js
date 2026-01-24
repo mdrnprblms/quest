@@ -1,8 +1,13 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-// We stick to standard GLTFLoader
-// import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'; 
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'; 
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+
+// --- POST-PROCESSING IMPORTS ---
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 // --- LOADING SCREEN SETUP ---
 const loadingScreen = document.createElement('div');
@@ -204,15 +209,38 @@ const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerH
 camera.position.set(0, 20, 20); 
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); 
-
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    composer.setSize(window.innerWidth, window.innerHeight); // <--- Add this
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
 renderer.useLegacyLights = false; 
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 document.body.appendChild(renderer.domElement);
+
+// --- POST-PROCESSING SETUP (BOKEH) ---
+const composer = new EffectComposer(renderer);
+const renderPass = new RenderPass(scene, camera);
+composer.addPass(renderPass);
+
+const bokehPass = new BokehPass(scene, camera, {
+    focus: 10.0,       // Distance to focus on (will update dynamically)
+    aperture: 0.0001,  // Blur strength (0.0001 is subtle, 0.0002 is strong)
+    maxblur: 0.01,     // Max blur level
+    width: window.innerWidth,
+    height: window.innerHeight
+});
+composer.addPass(bokehPass);
+
+const outputPass = new OutputPass();
+composer.addPass(outputPass);
+
+// --- DRACO LOADER SETUP (For your compressed Archway map) ---
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
+// Note: We will attach this to the main loader below
 
 // --- 3. LIGHTING ---
 const hemiLight = new THREE.HemisphereLight(0x333366, 0x404040, 2.5);
@@ -265,6 +293,7 @@ initEnvironment();
 
 // --- 4. ASSETS ---
 const loader = new GLTFLoader();
+loader.setDRACOLoader(dracoLoader); // <--- Add this line
 
 const cityGroup = new THREE.Group();
 scene.add(cityGroup);
@@ -1023,11 +1052,18 @@ function animate() {
         currentLookAt.lerp(targetLook, 0.1);
         camera.lookAt(currentLookAt);
         
-        scene.fog.near = THREE.MathUtils.lerp(scene.fog.near, targetFogNear, 0.05);
+                scene.fog.near = THREE.MathUtils.lerp(scene.fog.near, targetFogNear, 0.05);
         scene.fog.far = THREE.MathUtils.lerp(scene.fog.far, targetFogFar, 0.05);
+
+        // UPDATE BOKEH FOCUS (Keep player sharp)
+        if (playerGroup) {
+            const distToCam = camera.position.distanceTo(playerGroup.position);
+            bokehPass.uniforms['focus'].value = distToCam;
+        }
     }
 
-    renderer.render(scene, camera);
+    // RENDER WITH COMPOSER (Instead of renderer)
+    composer.render();
 }
 animate();
 

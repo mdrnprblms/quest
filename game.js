@@ -62,7 +62,7 @@ window.selectMap = (mapName) => {
 };
 
 // --- MOBILE CONTROLS SETUP ---
-let joystickInput = { x: 1, y: 1 };
+let joystickInput = { x: 0, y: 0 };
 let joystickManager;
 
 setTimeout(() => {
@@ -1131,7 +1131,12 @@ function animate() {
         let forward = 0;
         if (keys.w) forward = 1;
         if (keys.s) forward = -1;
-        if (Math.abs(joystickInput.y) > 0.1) forward = joystickInput.y > 0 ? 1 : -1;
+                // JOYSTICK INPUT (Override keyboard if active)
+        if (Math.abs(joystickInput.y) > 0.1) {
+            // FIX: Invert the value. 
+            // Joystick UP (y>0) needs to be -1 to move Forward in 3D space.
+            forward = joystickInput.y > 0 ? -1 : 1; 
+        }
 
         if (keys.a) cameraAngle += cameraRotationSpeed;
         if (keys.d) cameraAngle -= cameraRotationSpeed;

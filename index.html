@@ -115,45 +115,39 @@
             0% { opacity: 0.5; } 50% { opacity: 1.0; transform: scale(1.1); } 100% { opacity: 0.5; }
         }
 
-        /* --- CONTROLS --- */
-                /* --- MOBILE CONTROLS CSS --- */
-        #mobile-controls {
-            position: absolute;
-            bottom: 20px;
-            left: 20px;
-            width: 100%;
-            height: 150px;
-            display: flex;
-            justify-content: space-between;
-            pointer-events: none; /* Let touches pass through empty space */
-            z-index: 9999;
-        }
+    #mobile-controls {
+        position: absolute;
+        bottom: 30px;
+        left: 20px;
+        right: 20px;
+        height: 150px;
+        pointer-events: none; /* Let clicks pass through empty space */
+        z-index: 9999;
+        display: flex;
+        justify-content: space-between;
+    }
 
-        #zone_joystick {
-            width: 150px;
-            height: 150px;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 50%;
-            pointer-events: auto; /* Re-enable touch for joystick */
-            position: relative;
-        }
+    #zone_joystick {
+        width: 120px;
+        height: 120px;
+        pointer-events: auto; /* Enable touch for joystick */
+    }
 
-        #mobile-jump {
-            width: 80px;
-            height: 80px;
-            background: rgba(255, 255, 255, 0.2);
-            border-radius: 50%;
-            margin-right: 40px;
-            margin-top: 35px;
-            pointer-events: auto;
-            color: white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: bold;
-            font-size: 14px;
-            border: 2px solid white;
-        }
+    #mobile-jump {
+        width: 100px;
+        height: 100px;
+        background: rgba(255, 255, 255, 0.2);
+        border: 2px solid white;
+        border-radius: 50%;
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+        font-size: 18px;
+        pointer-events: auto; /* Enable touch for jump */
+        backdrop-filter: blur(4px);
+    }
 
         .debug-btn {
             background: #333; color: white; border: 1px solid #555;

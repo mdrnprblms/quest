@@ -115,39 +115,20 @@
             0% { opacity: 0.5; } 50% { opacity: 1.0; transform: scale(1.1); } 100% { opacity: 0.5; }
         }
 
-    #mobile-controls {
-        position: absolute;
-        bottom: 30px;
-        left: 20px;
-        right: 20px;
-        height: 150px;
-        pointer-events: none; /* Let clicks pass through empty space */
-        z-index: 9999;
-        display: flex;
-        justify-content: space-between;
-    }
-
-    #zone_joystick {
-        width: 120px;
-        height: 120px;
-        pointer-events: auto; /* Enable touch for joystick */
-    }
-
-    #mobile-jump {
-        width: 100px;
-        height: 100px;
-        background: rgba(255, 255, 255, 0.2);
-        border: 2px solid white;
-        border-radius: 50%;
-        color: white;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-weight: bold;
-        font-size: 18px;
-        pointer-events: auto; /* Enable touch for jump */
-        backdrop-filter: blur(4px);
-    }
+        /* --- CONTROLS --- */
+        #mobile-controls { display: none; } /* Hidden on load */
+        
+        #zone_joystick { position: absolute; bottom: 40px; left: 40px; width: 150px; height: 150px; z-index: 150; }
+        
+        #mobile-jump {
+            position: absolute; bottom: 40px; right: 40px; width: 90px; height: 90px;
+            background: rgba(50, 205, 50, 0.3); border: 4px solid #32CD32;
+            border-radius: 50%; display: flex; justify-content: center;
+            align-items: center; color: white; font-family: 'Helvetica', sans-serif;
+            font-weight: bold; font-size: 18px; z-index: 150;
+            text-shadow: 1px 1px 0 #000; user-select: none;
+        }
+        #mobile-jump:active { background: rgba(50, 205, 50, 0.6); transform: scale(0.95); }
 
         .debug-btn {
             background: #333; color: white; border: 1px solid #555;

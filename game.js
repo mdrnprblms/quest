@@ -726,25 +726,26 @@ function getAnywhereSpawnPoint(centerPos, minRadius, maxRadius, ignoreRoads = fa
 }
 
 function spawnBeacon() {
-    // FIX: Reduced max radius from 3000 to 2000 to keep it safe
-    let pos = getAnywhereSpawnPoint(playerGroup.position, 150, 2000);
+    // OLD: let pos = getAnywhereSpawnPoint(playerGroup.position, 50, 300);
+    
+    // NEW: 3x - 4x distance (150 min, 1200 max)
+    // This forces the game to find a spot much further away
+    let pos = getAnywhereSpawnPoint(playerGroup.position, 150, 1200);
     
     if (pos) {
         beaconGroup.position.copy(pos);
     } else {
+        // Fallback: If it can't find a far spot, try a closer one
         console.log("Could not find far spawn, trying closer...");
-        // Fallback radius
-        let closePos = getAnywhereSpawnPoint(playerGroup.position, 50, 500);
+        let closePos = getAnywhereSpawnPoint(playerGroup.position, 50, 300);
         if (closePos) {
              beaconGroup.position.copy(closePos);
         } else {
-             // Ultimate fallback
-             beaconGroup.position.set(0, 0, 0);
+             beaconGroup.position.set(playerGroup.position.x + 20, 0, playerGroup.position.z);
         }
     }
     updateWantedSystem();
 }
-
 
 function updateWantedSystem() {
     if (!policeTemplate || !policeClips) return;
@@ -957,7 +958,6 @@ window.addEventListener('keyup', (e) => {
 
 const clock = new THREE.Clock();
 
-// --- UPDATED ANIMATE FUNCTION ---
 function animate() {
     requestAnimationFrame(animate);
     
@@ -972,10 +972,15 @@ function animate() {
 
     if (gameActive) {
         if (isTimerRunning) timeLeft -= delta;
+        
+        // Handle Powerup Timers
         if (drinkTimer > 0) drinkTimer -= delta;
         if (bikeTimer > 0) {
             bikeTimer -= delta;
-            if (bikeTimer <= 0) hasBike = false;
+            if (bikeTimer <= 0) {
+                hasBike = false; // Bike expired
+                bikeTimer = 0;
+            }
         }
         
         spawnTimer += delta;
@@ -991,74 +996,154 @@ function animate() {
         }
     }
 
-    // --- POWERUP CHECK ---
+    // --- 1. POWERUP COLLISION CHECK (New Logic) ---
     if (gameActive && playerGroup) {
         powerups.forEach((p) => {
             if (p.visible && playerGroup.position.distanceTo(p.position) < 3.0) {
+                // Collect Powerup
                 p.visible = false; 
-                p.position.y = -100; 
+                p.position.y = -100; // Move out of way
+                
                 if (p.userData.type === 'bike') {
                     hasBike = true;
-                    bikeTimer = 30.0; 
+                    bikeTimer = 30.0; // Bike lasts 30 seconds
                     timeLeft += 10;
                 } 
-                else if (p.userData.type === 'drink') drinkTimer = 15.0;
-                else if (p.userData.type.includes('armor')) armor++;
+                else if (p.userData.type === 'drink') {
+                    drinkTimer = 15.0;
+                }
+                else if (p.userData.type.includes('armor')) {
+                    armor++;
+                }
             }
         });
     }
 
-    // --- MODEL SWAP ---
+    // --- 2. MODEL SWAP LOGIC ---
+    // Ensure both meshes exist before trying to swap
     if (playerMesh && playerBikeMesh) {
         if (hasBike) {
+            // SHOW BIKE, HIDE HUMAN
             playerMesh.visible = false;
             playerBikeMesh.visible = true;
             if (bikeMixer) bikeMixer.update(delta);
         } else {
+            // SHOW HUMAN, HIDE BIKE
             playerMesh.visible = true;
             playerBikeMesh.visible = false;
-            if (mixer) mixer.update(delta);
+            if (mixer) mixer.update(delta); // Only animate human when visible
         }
+    } else if (playerMesh && mixer) {
+        // Fallback if bike model isn't loaded yet
+        mixer.update(delta);
     }
 
-    // --- AI LOGIC (Keep existing) ---
+    // --- 3. EXISTING AI LOGIC ---
     if (gameActive) {
         activeEnemies.forEach((enemy) => {
              if (enemy.mixer) enemy.mixer.update(delta);
-             // ... [YOUR AI LOGIC HERE] ...
-             // (Ensure you kept the AI code from previous steps)
+             
+             const distToPlayer = enemy.groupRef.position.distanceTo(playerGroup.position);
+             
+             let detected = false;
+             
+             if (distToPlayer < ENEMY_HEARING_DIST) {
+                 detected = true;
+             } 
+             else if (distToPlayer < ENEMY_VISION_DIST) {
+                 const enemyFwd = new THREE.Vector3(0, 0, 1);
+                 enemyFwd.applyQuaternion(enemy.groupRef.quaternion).normalize();
+                 const toPlayer = new THREE.Vector3().subVectors(playerGroup.position, enemy.groupRef.position).normalize();
+                 const angleRad = enemyFwd.angleTo(toPlayer);
+                 const angleDeg = THREE.MathUtils.radToDeg(angleRad);
+                 if (angleDeg < (ENEMY_FOV / 2)) {
+                     detected = true;
+                 }
+             }
+
+             if (detected) {
+                 enemy.state = 'CHASE';
+             } else if (enemy.state === 'CHASE' && distToPlayer > ENEMY_VISION_DIST * 1.5) {
+                 enemy.state = 'PATROL';
+                 enemy.patrolTarget = null; 
+             }
+
+             if (enemy.state === 'CHASE') {
+                 enemy.groupRef.lookAt(playerGroup.position.x, enemy.groupRef.position.y, playerGroup.position.z);
+                 const enemyDir = new THREE.Vector3().subVectors(playerGroup.position, enemy.groupRef.position).normalize();
+                 enemy.groupRef.position.addScaledVector(enemyDir, ENEMY_RUN_SPEED * delta);
+                 
+                 if (distToPlayer < ENEMY_CATCH_RADIUS) {
+                     gameActive = false;
+                     isBusted = true;
+                     if (currentAction) currentAction.stop();
+                 }
+                 
+                 if (enemy.actions['Chase'] && enemy.currentAction !== enemy.actions['Chase']) {
+                     enemy.actions['Chase'].reset().play();
+                     if (enemy.currentAction) enemy.currentAction.fadeOut(0.2);
+                     enemy.currentAction = enemy.actions['Chase'];
+                 }
+             } 
+             
+             else if (enemy.state === 'PATROL') {
+                 if (!enemy.patrolTarget) {
+                     let p = getAnywhereSpawnPoint(enemy.groupRef.position, 10, 40);
+                     if (p) enemy.patrolTarget = p;
+                     enemy.patrolTimer = 0;
+                 }
+                 
+                 const distToTarget = enemy.groupRef.position.distanceTo(enemy.patrolTarget);
+                 
+                 if (distToTarget < 2.0) {
+                     enemy.patrolTimer += delta;
+                     if (enemy.patrolTimer > 2.0) {
+                         enemy.patrolTarget = null; 
+                     }
+                     if (enemy.actions['Idle'] && enemy.currentAction !== enemy.actions['Idle']) {
+                         enemy.actions['Idle'].reset().play();
+                         if (enemy.currentAction) enemy.currentAction.fadeOut(0.2);
+                         enemy.currentAction = enemy.actions['Idle'];
+                     }
+                 } else {
+                     enemy.groupRef.lookAt(enemy.patrolTarget.x, enemy.groupRef.position.y, enemy.patrolTarget.z);
+                     const walkDir = new THREE.Vector3().subVectors(enemy.patrolTarget, enemy.groupRef.position).normalize();
+                     enemy.groupRef.position.addScaledVector(walkDir, ENEMY_WALK_SPEED * delta);
+                     
+                     if (enemy.actions['Patrol'] && enemy.currentAction !== enemy.actions['Patrol']) {
+                         enemy.actions['Patrol'].reset().play();
+                         if (enemy.currentAction) enemy.currentAction.fadeOut(0.2);
+                         enemy.currentAction = enemy.actions['Patrol'];
+                     }
+                 }
+             }
+
+             raycaster.set(new THREE.Vector3(enemy.groupRef.position.x, 300, enemy.groupRef.position.z), downVector);
+             const hits = raycaster.intersectObjects(colliderMeshes, false);
+             if (hits.length > 0) {
+                 enemy.groupRef.position.y = THREE.MathUtils.lerp(enemy.groupRef.position.y, hits[0].point.y, 5 * delta);
+             }
         });
     }
     
-    // --- PLAYER MOVEMENT ---
+    // --- 4. PLAYER MOVEMENT & ROTATION ---
     if (gameActive && !isMapOpen) {
         let forward = 0;
-        
-        // KEYBOARD
         if (keys.w) forward = 1;
         if (keys.s) forward = -1;
-        
-        // JOYSTICK
-        // FIX: Added 'deadzone' check (> 0.1) so he doesn't spin in circles
-        if (Math.abs(joystickInput.y) > 0.1) {
-            // FIX: Swap 1/-1 if controls were inverted. 
-            // Trying "y > 0 ? 1 : -1" (Standard)
-            forward = joystickInput.y > 0 ? 1 : -1; 
-        }
+        if (Math.abs(joystickInput.y) > 0.1) forward = joystickInput.y > 0 ? 1 : -1;
 
-        // TURN
         if (keys.a) cameraAngle += cameraRotationSpeed;
         if (keys.d) cameraAngle -= cameraRotationSpeed;
-        if (Math.abs(joystickInput.x) > 0.1) {
-             // FIX: Invert X multiplication if turning is backwards
-             cameraAngle -= joystickInput.x * cameraRotationSpeed * 2.0; 
-        }
+        if (Math.abs(joystickInput.x) > 0.1) cameraAngle -= joystickInput.x * cameraRotationSpeed * 2.0;
 
-        // JUMP
+        // JUMP (Disable jumping if on bike)
         if (keys.space && isGrounded && !jumpLocked) {
             verticalVelocity = JUMP_FORCE;
             isGrounded = false;
             jumpLocked = true;
+            
+            // Play Jump animation only if NOT on bike
             if (!hasBike && animationsMap.has('Jump')) {
                  const jumpAction = animationsMap.get('Jump');
                  jumpAction.reset().setLoop(THREE.LoopOnce).play();
@@ -1080,27 +1165,25 @@ function animate() {
                 playerGroup.position.z += moveVec.z * currentSpeed * delta;
             }
 
-            // ROTATION LOGIC
-            // FIX: If player was backwards, we adjust the target rotation offset here
+            // ROTATION: Apply to both models so they stay synced
             const targetRotation = cameraAngle + (forward > 0 ? 0 : Math.PI); 
-            
-            let rotDiff = targetRotation - playerGroup.rotation.y; 
+            let rotDiff = targetRotation - playerMesh.rotation.y;
             while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
             while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
-            const smoothRot = playerGroup.rotation.y + (rotDiff * 0.1);
             
-            // Apply smoothed rotation to the GROUP
-            playerGroup.rotation.y = smoothRot;
+            // ... inside the forward !== 0 block ...
 
-            // FIX: ROTATE MODELS INSIDE THE GROUP
-            // Reset local rotations
-            if(playerMesh) playerMesh.rotation.y = Math.PI; // Human usually needs 180 flip
+            // Apply smoothing
+            const smoothRot = playerMesh.rotation.y + (rotDiff * 0.1);
             
-            // FIX: BIKE ROTATION (Re-apply 90 degree offset)
-            // Try -Math.PI/2 if it's 90 degrees wrong the other way
-            if(playerBikeMesh) playerBikeMesh.rotation.y = Math.PI + (Math.PI / 2); 
+            // Apply rotation to Human (Normal)
+            if(playerMesh) playerMesh.rotation.y = smoothRot;
+            
+            // Apply rotation to Bike (With +90 Degree Offset)
+            // Math.PI / 2 radians = 90 degrees
+            if(playerBikeMesh) playerBikeMesh.rotation.y = smoothRot + (Math.PI / 2);
 
-            // Run Animation
+            // Run Animation (Only if Human)
             if (!hasBike && isGrounded && currentAction !== animationsMap.get('Run')) {
                 const run = animationsMap.get('Run');
                 if (run) {
@@ -1109,8 +1192,14 @@ function animate() {
                     currentAction = run;
                 }
             }
+            
+            // Bike Speed Animation: Increase speed of 'crunches' if moving
+            if (hasBike && bikeMixer) {
+                // You can add logic here to speed up the bike animation when moving
+            }
+
         } else {
-            // Idle Animation
+            // Idle Animation (Only if Human)
             if (!hasBike && isGrounded && currentAction !== animationsMap.get('Idle')) {
                 const idle = animationsMap.get('Idle');
                 if (idle) {
@@ -1125,69 +1214,78 @@ function animate() {
         verticalVelocity += GRAVITY * delta; 
         playerGroup.position.y += verticalVelocity * delta;
 
-        // FLOOR COLLISION
+        // Floor Collision
         raycaster.set(playerGroup.position.clone().add(new THREE.Vector3(0, 5, 0)), downVector);
         const groundHits = raycaster.intersectObjects(colliderMeshes, false);
         if (groundHits.length > 0) {
             const hitY = groundHits[0].point.y;
-            if (playerGroup.position.y - hitY < 0.5 && verticalVelocity <= 0) {
+            const distToFloor = playerGroup.position.y - hitY;
+            
+            if (verticalVelocity <= 0 && distToFloor < 0.5) {
                 playerGroup.position.y = hitY;
                 verticalVelocity = 0;
                 isGrounded = true;
-            } else if (isGrounded && playerGroup.position.y - hitY < 1.5) {
-                playerGroup.position.y = THREE.MathUtils.lerp(playerGroup.position.y, hitY, 15 * delta);
+            }
+            else if (isGrounded && distToFloor < 1.5) {
+                 playerGroup.position.y = THREE.MathUtils.lerp(playerGroup.position.y, hitY, 15 * delta);
+                 verticalVelocity = 0; 
             }
         }
         
-        // CHECK DELIVERY
+        // Check Delivery
         if (playerGroup.position.distanceTo(beaconGroup.position) < 10) { 
              score++;
-             timeLeft += 60;
+             timeLeft += 60; // Bonus time
              spawnBeacon();
         }
-    }
 
-    // --- CAMERA & FOG ---
-    let targetPos, targetLook;
-    let targetFogNear, targetFogFar;
-    const distFromCenter = playerGroup.position.length();
-    const warningUI = document.getElementById('zone-warning');
+        // --- 5. CAMERA & FOG LOGIC (Missing Block) ---
+        let targetPos, targetLook;
+        let targetFogNear, targetFogFar;
+        
+        const distFromCenter = playerGroup.position.length();
+        const warningUI = document.getElementById('zone-warning');
 
-    if (isMapOpen) {
-        targetPos = playerGroup.position.clone().add(new THREE.Vector3(0, 200, 0)); 
-        targetLook = playerGroup.position.clone();
-        targetFogNear = 150; targetFogFar = 800;
-        beaconGroup.scale.set(4, 4, 4); 
-        arrowMesh.scale.set(4, 4, 4);
-        if (warningUI) warningUI.style.display = 'none';
-    } else {
-        const offset = new THREE.Vector3(0, 6, -10).applyAxisAngle(new THREE.Vector3(0,1,0), cameraAngle);
-        targetPos = playerGroup.position.clone().add(offset);
-        targetLook = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 0));
-        beaconGroup.scale.set(1, 1, 1);
-        arrowMesh.scale.set(1, 1, 1);
-
-        const safeRadius = 3000;
-        if (distFromCenter > safeRadius) {
-            const dangerFactor = Math.min((distFromCenter - safeRadius) / (MAP_LIMIT - safeRadius), 1.0);
-            targetFogNear = THREE.MathUtils.lerp(1500, 50, dangerFactor);
-            targetFogFar  = THREE.MathUtils.lerp(3000, 500, dangerFactor);
-            if (warningUI) warningUI.style.display = dangerFactor > 0.5 ? 'block' : 'none';
-        } else {
-            targetFogNear = 1500; targetFogFar = 3000;
+        if (isMapOpen) {
+            targetPos = playerGroup.position.clone().add(new THREE.Vector3(0, 200, 0)); 
+            targetLook = playerGroup.position.clone();
+            targetFogNear = 150;
+            targetFogFar = 800;
+            beaconGroup.scale.set(4, 4, 4); 
+            arrowMesh.scale.set(4, 4, 4);
             if (warningUI) warningUI.style.display = 'none';
+        } else {
+            const offset = new THREE.Vector3(0, 6, -10).applyAxisAngle(new THREE.Vector3(0,1,0), cameraAngle);
+            targetPos = playerGroup.position.clone().add(offset);
+            targetLook = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 0));
+            beaconGroup.scale.set(1, 1, 1);
+            arrowMesh.scale.set(1, 1, 1);
+
+            // Dynamic Border Fog
+            const safeRadius = 3000;
+            if (distFromCenter > safeRadius) {
+                const dangerFactor = Math.min((distFromCenter - safeRadius) / (MAP_LIMIT - safeRadius), 1.0);
+                targetFogNear = THREE.MathUtils.lerp(1500, 50, dangerFactor);
+                targetFogFar  = THREE.MathUtils.lerp(3000, 500, dangerFactor);
+                if (warningUI) warningUI.style.display = dangerFactor > 0.5 ? 'block' : 'none';
+            } else {
+                targetFogNear = 1500; 
+                targetFogFar = 3000;
+                if (warningUI) warningUI.style.display = 'none';
+            }
         }
-    }
 
-    camera.position.lerp(targetPos, 0.1);
-    currentLookAt.lerp(targetLook, 0.1);
-    camera.lookAt(currentLookAt);
-    
-    scene.fog.near = THREE.MathUtils.lerp(scene.fog.near, targetFogNear, 0.05);
-    scene.fog.far = THREE.MathUtils.lerp(scene.fog.far, targetFogFar, 0.05);
+        camera.position.lerp(targetPos, 0.1);
+        currentLookAt.lerp(targetLook, 0.1);
+        camera.lookAt(currentLookAt);
+        
+        scene.fog.near = THREE.MathUtils.lerp(scene.fog.near, targetFogNear, 0.05);
+        scene.fog.far = THREE.MathUtils.lerp(scene.fog.far, targetFogFar, 0.05);
 
-    if (playerGroup) {
-        bokehPass.uniforms['focus'].value = camera.position.distanceTo(playerGroup.position);
+        if (playerGroup) {
+            const distToCam = camera.position.distanceTo(playerGroup.position);
+            bokehPass.uniforms['focus'].value = distToCam;
+        }
     }
 
     composer.render();

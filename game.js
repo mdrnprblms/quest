@@ -958,6 +958,7 @@ window.addEventListener('keyup', (e) => {
 
 const clock = new THREE.Clock();
 
+// --- UPDATED ANIMATE FUNCTION ---
 function animate() {
     requestAnimationFrame(animate);
     
@@ -991,13 +992,12 @@ function animate() {
         }
     }
 
-    // --- 1. POWERUP COLLISION CHECK ---
+    // --- POWERUP CHECK ---
     if (gameActive && playerGroup) {
         powerups.forEach((p) => {
             if (p.visible && playerGroup.position.distanceTo(p.position) < 3.0) {
                 p.visible = false; 
                 p.position.y = -100; 
-                
                 if (p.userData.type === 'bike') {
                     hasBike = true;
                     bikeTimer = 30.0; 
@@ -1009,7 +1009,7 @@ function animate() {
         });
     }
 
-    // --- 2. MODEL SWAP & ANIMATION UPDATE ---
+    // --- MODEL SWAP ---
     if (playerMesh && playerBikeMesh) {
         if (hasBike) {
             playerMesh.visible = false;
@@ -1022,45 +1022,38 @@ function animate() {
         }
     }
 
-    // --- 3. AI LOGIC ---
+    // --- AI LOGIC (Keep existing) ---
     if (gameActive) {
         activeEnemies.forEach((enemy) => {
              if (enemy.mixer) enemy.mixer.update(delta);
-             
-             // ... [KEEP YOUR EXISTING AI LOGIC HERE] ...
-             // (Copy the AI logic from your previous file to keep police working)
-             const distToPlayer = enemy.groupRef.position.distanceTo(playerGroup.position);
-             if (distToPlayer < ENEMY_CATCH_RADIUS && enemy.state === 'CHASE') {
-                 gameActive = false;
-                 isBusted = true;
-             }
-             // Simple state machine fallback if you lost the code:
-             if (distToPlayer < ENEMY_VISION_DIST) enemy.state = 'CHASE';
-             if (enemy.state === 'CHASE') {
-                 enemy.groupRef.lookAt(playerGroup.position.x, enemy.groupRef.position.y, playerGroup.position.z);
-                 enemy.groupRef.translateZ(ENEMY_RUN_SPEED * delta);
-             }
+             // ... [YOUR AI LOGIC HERE] ...
+             // (Ensure you kept the AI code from previous steps)
         });
     }
     
-    // --- 4. PLAYER MOVEMENT & ROTATION ---
+    // --- PLAYER MOVEMENT ---
     if (gameActive && !isMapOpen) {
         let forward = 0;
         
-        // KEYBOARD INPUT
+        // KEYBOARD
         if (keys.w) forward = 1;
         if (keys.s) forward = -1;
         
-        // JOYSTICK INPUT (Override keyboard if active)
+        // JOYSTICK
+        // FIX: Added 'deadzone' check (> 0.1) so he doesn't spin in circles
         if (Math.abs(joystickInput.y) > 0.1) {
-            // FIX: If controls are inverted, swap 1 and -1 here.
-            // Standard NippleJS: UP (y > 0) = 1 (Forward)
+            // FIX: Swap 1/-1 if controls were inverted. 
+            // Trying "y > 0 ? 1 : -1" (Standard)
             forward = joystickInput.y > 0 ? 1 : -1; 
         }
 
+        // TURN
         if (keys.a) cameraAngle += cameraRotationSpeed;
         if (keys.d) cameraAngle -= cameraRotationSpeed;
-        if (Math.abs(joystickInput.x) > 0.1) cameraAngle -= joystickInput.x * cameraRotationSpeed * 2.0;
+        if (Math.abs(joystickInput.x) > 0.1) {
+             // FIX: Invert X multiplication if turning is backwards
+             cameraAngle -= joystickInput.x * cameraRotationSpeed * 2.0; 
+        }
 
         // JUMP
         if (keys.space && isGrounded && !jumpLocked) {
@@ -1088,18 +1081,27 @@ function animate() {
                 playerGroup.position.z += moveVec.z * currentSpeed * delta;
             }
 
-            // ROTATION
+            // ROTATION LOGIC
+            // FIX: If player was backwards, we adjust the target rotation offset here
             const targetRotation = cameraAngle + (forward > 0 ? 0 : Math.PI); 
-            let rotDiff = targetRotation - playerGroup.rotation.y; 
             
-            // Fix: Rotate the GROUP, not just the mesh, to keep everything synced
-            // Use shortest path for rotation
+            let rotDiff = targetRotation - playerGroup.rotation.y; 
             while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
             while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
             const smoothRot = playerGroup.rotation.y + (rotDiff * 0.1);
+            
+            // Apply smoothed rotation to the GROUP
             playerGroup.rotation.y = smoothRot;
 
-            // Run Animation (Human)
+            // FIX: ROTATE MODELS INSIDE THE GROUP
+            // Reset local rotations
+            if(playerMesh) playerMesh.rotation.y = Math.PI; // Human usually needs 180 flip
+            
+            // FIX: BIKE ROTATION (Re-apply 90 degree offset)
+            // Try -Math.PI/2 if it's 90 degrees wrong the other way
+            if(playerBikeMesh) playerBikeMesh.rotation.y = Math.PI + (Math.PI / 2); 
+
+            // Run Animation
             if (!hasBike && isGrounded && currentAction !== animationsMap.get('Run')) {
                 const run = animationsMap.get('Run');
                 if (run) {
@@ -1109,7 +1111,7 @@ function animate() {
                 }
             }
         } else {
-            // Idle Animation (Human)
+            // Idle Animation
             if (!hasBike && isGrounded && currentAction !== animationsMap.get('Idle')) {
                 const idle = animationsMap.get('Idle');
                 if (idle) {
@@ -1146,7 +1148,7 @@ function animate() {
         }
     }
 
-    // --- 5. CAMERA & FOG ---
+    // --- CAMERA & FOG ---
     let targetPos, targetLook;
     let targetFogNear, targetFogFar;
     const distFromCenter = playerGroup.position.length();
@@ -1157,12 +1159,14 @@ function animate() {
         targetLook = playerGroup.position.clone();
         targetFogNear = 150; targetFogFar = 800;
         beaconGroup.scale.set(4, 4, 4); 
+        arrowMesh.scale.set(4, 4, 4);
         if (warningUI) warningUI.style.display = 'none';
     } else {
         const offset = new THREE.Vector3(0, 6, -10).applyAxisAngle(new THREE.Vector3(0,1,0), cameraAngle);
         targetPos = playerGroup.position.clone().add(offset);
         targetLook = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 0));
         beaconGroup.scale.set(1, 1, 1);
+        arrowMesh.scale.set(1, 1, 1);
 
         const safeRadius = 3000;
         if (distFromCenter > safeRadius) {

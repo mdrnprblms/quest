@@ -62,7 +62,7 @@ window.selectMap = (mapName) => {
 };
 
 // --- MOBILE CONTROLS SETUP ---
-let joystickInput = { x: 0, y: 0 };
+let joystickInput = { x: 1, y: 1 };
 let joystickManager;
 
 setTimeout(() => {
@@ -787,7 +787,7 @@ function createNewEnemy() {
     const mesh = SkeletonUtils.clone(policeTemplate);
     
     // 2. APPLY SCALE & VISIBILITY SETTINGS
-    mesh.scale.set(4, 4, 4); 
+    mesh.scale.set(4.5, 4.5, 4.5); 
     mesh.position.y = 0.0; 
     
     // Force the browser to always draw the police, even if it thinks they are off-screen
@@ -923,7 +923,7 @@ function createPowerupGroup(type, pos) {
     
     const laser = new THREE.Line(
         new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,50,0)]),
-        new THREE.LineBasicMaterial({ color: 0xFF00FF })
+        new THREE.LineBasicMaterial({ color: 0xFF0000 })
     );
     group.add(laser);
 

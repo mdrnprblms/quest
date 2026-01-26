@@ -23,6 +23,12 @@ loadingScreen.style.cssText = `
 loadingScreen.innerHTML = `<div>LOADING MAP...</div><div style="font-size:14px; margin-top:10px; opacity:0.7;">PLEASE WAIT</div>`;
 document.body.appendChild(loadingScreen);
 
+// --- GAME LOOP ---
+const keys = { w: false, a: false, s: false, d: false, space: false, k: false };
+let cameraAngle = 0;
+const cameraRotationSpeed = 0.03;
+const currentLookAt = new THREE.Vector3(0, 0, 0);
+
 // Define your maps array near the top of the file (with other configs) or right here
 const maps = ['shoreditch.glb', 'archway.glb', 'carnabyst.glb'];
 let currentMapIndex = 0; // Make sure this variable exists in your state variables
@@ -37,6 +43,58 @@ window.switchMap = () => {
     
     // De-focus button so spacebar doesn't trigger it again
     if (document.activeElement) document.activeElement.blur();
+};
+
+window.resetGame = () => {
+    console.log("Reseting Game State...");
+
+    // 1. Reset Game State Variables
+    score = 0;
+    armor = 0;
+    timeLeft = START_TIME;
+    gameActive = true;
+    isBusted = false;
+    isPaused = false;
+    hasBike = false;
+    drinkTimer = 0;
+    spawnTimer = 0;
+
+    // 2. Reset Player Model Visibility
+    if (playerMesh) playerMesh.visible = true;
+    if (playerBikeMesh) playerBikeMesh.visible = false;
+
+    // 3. Clear Existing Enemies
+    activeEnemies.forEach(e => {
+        enemiesGroup.remove(e.groupRef);
+    });
+    activeEnemies = []; // Clear the array
+
+    // 4. Clear Existing Powerups
+    powerups.forEach(p => {
+        scene.remove(p);
+    });
+    powerups = [];
+
+    // 5. Reset Player Position
+    // Try to find a safe spot, or default to center
+    let startPos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, 500);
+    if (startPos) {
+        playerGroup.position.copy(startPos);
+        playerGroup.position.y += 2.0;
+    } else {
+        playerGroup.position.set(0, 20, 0);
+    }
+    verticalVelocity = 0;
+    
+    // 6. Spawn Initial Items
+    spawnBeacon();
+    
+    // MASSIVE SPAWN ON RESET
+    for(let i=0; i<50; i++) spawnPowerup(); 
+
+    // 7. Hide UI
+    const uiGameOver = document.getElementById('game-over');
+    if (uiGameOver) uiGameOver.style.display = 'none';
 };
 
 // --- MOBILE CONTROLS SETUP ---
@@ -86,7 +144,7 @@ const BASE_SPEED = 20.0;
 const BIKE_MULTIPLIER = 1.8; 
 const DRINK_MULTIPLIER = 1.4; 
 const DRINK_DURATION = 15.0;
-const POWERUP_SPAWN_RATE = 5.0; 
+const POWERUP_SPAWN_RATE = 0.5; // DRAMATICALLY INCREASED RATE (0.5s instead of 5.0s)
 
 // MAP & AI CONFIG
 const MAP_LIMIT = 4000;            
@@ -124,6 +182,7 @@ const JUMP_FORCE = 30.0;
 // DATA STORE
 let validRoadPositions = []; 
 let colliderMeshes = []; 
+let roadMeshes = []; // NEW: Stores DATA_ROADS
 let powerups = []; 
 
 // Templates
@@ -133,7 +192,12 @@ let lionTeeTemplate = null;
 let lionTeeGreyTemplate = null;
 let beltTemplate = null; 
 let policeTemplate = null;       
-let policeClips = null;          
+let policeClips = null;         
+
+// BIKE VARIABLES
+let playerBikeMesh = null;
+let bikeMixer = null;
+let bikeActions = []; // Stores all bike animations
 
 // ACTIVE ENEMIES LIST
 let activeEnemies = [];          
@@ -186,18 +250,59 @@ function updateUI() {
     
     if(uiPause) uiPause.style.display = isPaused ? "block" : "none";
     
-    if(uiGameOver) {
+    // --- REPLACE WITH THIS ---
+    if (uiGameOver) {
         if (!gameActive) {
-            uiGameOver.style.display = "block";
-            if (isBusted) {
-                uiGameOver.innerText = "BUSTED";
-                uiGameOver.style.color = "#0088ff"; 
-            } else {
-                uiGameOver.innerText = "SHIFT ENDED";
-                uiGameOver.style.color = "#ff3333";
+            uiGameOver.style.display = "flex"; // Use Flex to stack text and button
+            uiGameOver.style.flexDirection = "column";
+            uiGameOver.style.alignItems = "center";
+            uiGameOver.style.justifyContent = "center";
+            uiGameOver.style.gap = "20px";
+
+            // We use innerHTML so we can add the button
+            // We add a check so we don't redraw the button 60 times a second (flickering)
+            const titleText = isBusted ? "BUSTED" : "SHIFT ENDED";
+            const color = isBusted ? "#0088ff" : "#ff3333";
+            
+            // Only update HTML if it's different to prevent resetting the button state
+            if (!uiGameOver.getAttribute('data-shown')) {
+                uiGameOver.innerHTML = `
+                    <div style="font-size: 80px; color: ${color}; text-shadow: 2px 2px #000;">${titleText}</div>
+                    <div style="font-size: 24px; color: #fff;">SCORE: ${score}</div>
+                    <button id="retry-btn" style="
+                        padding: 15px 40px; 
+                        font-size: 24px; 
+                        font-family: 'Courier New', monospace; 
+                        font-weight: bold; 
+                        background: #fff; 
+                        color: #000; 
+                        border: none; 
+                        cursor: pointer;
+                        pointer-events: auto;
+                        border-radius: 5px;
+                    ">TRY AGAIN</button>
+                `;
+                
+                // Attach listener immediately
+                document.getElementById('retry-btn').addEventListener('click', (e) => {
+                    e.stopPropagation(); // Stop click from hitting game canvas
+                    window.resetGame();
+                    uiGameOver.setAttribute('data-shown', ''); // Reset flag
+                });
+                
+                // Add touch listener for mobile to be instant
+                document.getElementById('retry-btn').addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    window.resetGame();
+                    uiGameOver.setAttribute('data-shown', '');
+                });
+
+                uiGameOver.setAttribute('data-shown', 'true');
             }
         } else {
             uiGameOver.style.display = "none";
+            uiGameOver.removeAttribute('data-shown'); // Reset flag so it redraws next death
         }
     }
 }
@@ -225,7 +330,7 @@ composer.addPass(renderPass);
 
 const bokehPass = new BokehPass(scene, camera, {
     focus: 10.0,       // Distance to focus on (will update dynamically)
-    aperture: 0.00005,  // Blur strength (0.0001 is subtle, 0.0002 is strong)
+    aperture: 0.00002,  // Blur strength (0.0001 is subtle, 0.0002 is strong)
     maxblur: 0.01,     // Max blur level
     width: window.innerWidth,
     height: window.innerHeight
@@ -337,6 +442,7 @@ function loadLevel(mapName) {
     
     while(cityGroup.children.length > 0){ cityGroup.remove(cityGroup.children[0]); }
     colliderMeshes = [];
+    roadMeshes = []; // Reset road meshes
     validRoadPositions = [];
     powerups.forEach(p => scene.remove(p));
     powerups = [];
@@ -355,7 +461,13 @@ function loadLevel(mapName) {
 
         map.traverse((child) => {
             if (child.isMesh) {
-                if (child.name.includes("Border") || child.name.includes("border")) {
+                // 1. DATA ROADS (New Logic)
+                if (child.name.includes("DATA_ROADS")) {
+                    // It is a road mesh. We keep it for raycasting but hide it.
+                    child.visible = false; 
+                    roadMeshes.push(child);
+                }
+                else if (child.name.includes("Border") || child.name.includes("border")) {
                     child.visible = false;       
                     colliderMeshes.push(child);  
                 } 
@@ -363,7 +475,7 @@ function loadLevel(mapName) {
                     child.castShadow = true;
                     child.receiveShadow = true;
                     child.name = "CITY_MESH"; 
-                    colliderMeshes.push(child);
+                    colliderMeshes.push(child); // Buildings / Ground
                     if (child.material) {
                         child.material.roughness = 0.9;
                         child.material.metalness = 0.1;
@@ -376,20 +488,25 @@ function loadLevel(mapName) {
         cityGroup.add(map);
 
         cityGroup.updateMatrixWorld(true);
-        let startPos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 500, 3000);
-        if (!startPos) startPos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, 3000);
-
+        // Updated spawn call:
+        let startPos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, 3000);
+        
         if (startPos) {
             playerGroup.position.copy(startPos);
             playerGroup.position.y += 5.0; 
             verticalVelocity = 0; 
         } else {
-            console.error("Could not find spawn point, defaulting to 0,20,0");
+            console.error("Could not find spawn point on ROAD, defaulting to 0,20,0");
             playerGroup.position.set(0, 20, 0); 
         }
         
         spawnBeacon();
-        spawnPowerup(); 
+        
+        // --- MASSIVE POWERUP SPAWN ---
+        // Spawn 100 random items immediately across the map
+        for(let i=0; i<100; i++) {
+            spawnPowerup();
+        }
         
         document.getElementById('loading-screen').style.display = 'none';
 
@@ -443,6 +560,38 @@ loader.load('playermodel.glb', (gltf) => {
 
 }, undefined, (err) => console.error("Player Model Error:", err));
 
+// --- PLAYER BIKE LOADER ---
+loader.load('playerbike.glb', (gltf) => {
+    playerBikeMesh = gltf.scene;
+    playerBikeMesh.scale.set(2.0, 2.0, 2.0); 
+    playerBikeMesh.rotation.y = THREE.MathUtils.degToRad(180);
+    playerBikeMesh.visible = false; // Hidden by default (until powerup collected)
+
+    playerBikeMesh.traverse(o => { 
+        if (o.isMesh) { 
+            o.castShadow = true; 
+            o.receiveShadow = true;
+            // Fix dark materials if necessary
+            if (o.material) {
+                o.material.metalness = 0.0; 
+                o.material.roughness = 0.8; 
+                if (o.material.color) o.material.color.set(0xffffff);
+            }
+        } 
+    });
+
+    playerGroup.add(playerBikeMesh);
+    
+    // Setup Animations: Prepare ALL clips to play together
+    bikeMixer = new THREE.AnimationMixer(playerBikeMesh);
+    if (gltf.animations.length > 0) {
+        gltf.animations.forEach((clip) => {
+            const action = bikeMixer.clipAction(clip);
+            bikeActions.push(action);
+        });
+    }
+
+}, undefined, (err) => console.error("Player Bike Error:", err));
 
 // --- ENEMY LOADER ---
 loader.load('police.glb', (gltf) => {
@@ -485,13 +634,13 @@ loader.load('monster_zero_ultra.glb', (gltf) => {
 
 loader.load('liontee.glb', (gltf) => {
     lionTeeTemplate = gltf.scene;
-    lionTeeTemplate.scale.set(1.5, 1.5, 1.5); 
+    lionTeeTemplate.scale.set(5, 5, 5); 
     lionTeeTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
 });
 
 loader.load('lionteegrey.glb', (gltf) => {
     lionTeeGreyTemplate = gltf.scene;
-    lionTeeGreyTemplate.scale.set(1.5, 1.5, 1.5);
+    lionTeeGreyTemplate.scale.set(5, 5, 5);
     lionTeeGreyTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
 });
 
@@ -518,7 +667,14 @@ function canMove(position, direction) {
 }
 
 function getAnywhereSpawnPoint(centerPos, minRadius, maxRadius) {
-    const maxTries = 50; 
+    // If no road meshes found, fallback to old logic (collisions with floor)
+    const useRoadLogic = roadMeshes.length > 0;
+    // We search against everything (including hidden roads)
+    const searchMeshes = useRoadLogic ? [...roadMeshes, ...colliderMeshes] : colliderMeshes;
+
+    // Increased maxTries because finding a specific road is harder than just "any floor"
+    const maxTries = 200; 
+    
     for (let i = 0; i < maxTries; i++) {
         let radius = minRadius + Math.random() * (maxRadius - minRadius);
         let angle = Math.random() * Math.PI * 2;
@@ -529,13 +685,40 @@ function getAnywhereSpawnPoint(centerPos, minRadius, maxRadius) {
         
         if (Math.abs(testX) > MAP_LIMIT || Math.abs(testZ) > MAP_LIMIT) continue;
 
+        // Cast from high up
         raycaster.set(new THREE.Vector3(testX, 500, testZ), downVector);
-        const intersects = raycaster.intersectObjects(colliderMeshes, false);
+        
+        // Intersect against BOTH Roads and Buildings (sorted by distance)
+        const intersects = raycaster.intersectObjects(searchMeshes, false);
         
         if (intersects.length > 0) {
-            const hit = intersects[0];
-            if (hit.point.y > -20 && hit.point.y < 50) {
-                return new THREE.Vector3(testX, hit.point.y + 2.0, testZ);
+            
+            if (useRoadLogic) {
+                // Check if the ray actually passed through a Road Mesh at some point
+                const hitRoad = intersects.find(hit => roadMeshes.includes(hit.object));
+
+                if (hitRoad) {
+                    // We are aligned with a road mesh (even if it is deep underground).
+                    
+                    // Now check the *First* object we hit (the visible surface).
+                    // Logic: If the first object we hit is "High" (a building roof), it's invalid.
+                    // If the first object we hit is "Low" (near 0), it's the street surface.
+                    
+                    const topHit = intersects[0];
+                    const surfaceY = topHit.point.y;
+
+                    // Assuming street level is roughly between -5 and +8
+                    // If we hit a roof at Y=20, this condition fails.
+                    if (surfaceY > -10 && surfaceY < 10) {
+                        return new THREE.Vector3(testX, surfaceY + 2.0, testZ);
+                    }
+                }
+            } else {
+                // Fallback (Old Logic): Just check height valid
+                const firstHit = intersects[0];
+                if (firstHit.point.y > -20 && firstHit.point.y < 50) {
+                    return new THREE.Vector3(testX, firstHit.point.y + 2.0, testZ);
+                }
             }
         } 
     }
@@ -543,11 +726,16 @@ function getAnywhereSpawnPoint(centerPos, minRadius, maxRadius) {
 }
 
 function spawnBeacon() {
-    let pos = getAnywhereSpawnPoint(playerGroup.position, 50, 300);
+    // OLD: let pos = getAnywhereSpawnPoint(playerGroup.position, 50, 300);
+    
+    // NEW: Spawns between 400 and 1500 units away from the player
+    let pos = getAnywhereSpawnPoint(playerGroup.position, 400, 1500);
+    
     if (pos) {
         beaconGroup.position.copy(pos);
     } else {
-        beaconGroup.position.set(playerGroup.position.x + 20, 0, playerGroup.position.z);
+        // Fallback: If no valid spot found, put it 100 units away instead of 20
+        beaconGroup.position.set(playerGroup.position.x + 100, 0, playerGroup.position.z);
     }
     updateWantedSystem();
 }
@@ -571,7 +759,12 @@ function updateWantedSystem() {
     
     activeEnemies.forEach((enemy) => {
         enemy.isChasing = false; 
-        let pos = getAnywhereSpawnPoint(beaconGroup.position, 10, 80);
+        
+        // OLD: let pos = getAnywhereSpawnPoint(beaconGroup.position, 10, 80);
+        
+        // NEW: Patrols a wider area (100 to 300 units) around the beacon
+        let pos = getAnywhereSpawnPoint(beaconGroup.position, 100, 300);
+        
         if (pos) {
             enemy.patrolTarget = pos;
         } else {
@@ -608,7 +801,11 @@ function createNewEnemy() {
     enemiesGroup.add(mesh);
     
     // 4. POSITION
-    let pos = getAnywhereSpawnPoint(beaconGroup.position, 10, 50);
+    // OLD: let pos = getAnywhereSpawnPoint(beaconGroup.position, 10, 50);
+    
+    // NEW: Spawns new police 150 to 400 units away from the beacon
+    let pos = getAnywhereSpawnPoint(beaconGroup.position, 150, 400);
+    
     if (pos) {
         mesh.position.copy(pos);
     } else {
@@ -666,7 +863,10 @@ function createNewEnemy() {
 }
 
 function spawnPowerup() {
-    let pos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, MAP_LIMIT * 0.8);
+    // Try to get a valid road position 
+    // We check anywhere from center (0,0) out to MAP_LIMIT (4000)
+    let pos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, MAP_LIMIT * 0.9);
+    
     if (!pos) return;
 
     const roll = Math.random();
@@ -682,15 +882,21 @@ function createPowerupGroup(type, pos) {
     const group = new THREE.Group();
     group.position.copy(pos);
 
+    // --- ADJUST THIS VALUE TO MOVE MODELS DOWN ---
+    const Y_OFFSET = -1.0;
+
     if (type === 'bike') {
-        if (bikeTemplate) group.add(bikeTemplate.clone());
-        else {
-            // FALLBACK GEOMETRY
+        if (bikeTemplate) {
+            const mesh = bikeTemplate.clone();
+            mesh.position.y = Y_OFFSET; // <--- ADD THIS
+            group.add(mesh);
+        } else {
             const mesh = new THREE.Mesh(new THREE.BoxGeometry(2,1,0.5), new THREE.MeshBasicMaterial({color: 0x32CD32}));
+            mesh.position.y = Y_OFFSET * 1,2; // <--- ADD THIS
             group.add(mesh);
         }
         group.userData = { type: 'bike', active: true };
-    } 
+    }
     else if (type === 'drink') {
         if (drinkTemplate) group.add(drinkTemplate.clone());
         else {
@@ -704,6 +910,7 @@ function createPowerupGroup(type, pos) {
         const useGrey = Math.random() > 0.5;
         if (useGrey && lionTeeGreyTemplate) group.add(lionTeeGreyTemplate.clone());
         else if (!useGrey && lionTeeTemplate) group.add(lionTeeTemplate.clone());
+        
         else {
             // FALLBACK
             const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.8,0.8,0.1), new THREE.MeshBasicMaterial({color: 0xFFD700}));
@@ -721,22 +928,18 @@ function createPowerupGroup(type, pos) {
         group.userData = { type: 'armor_belt', active: true };
     }
     
-    const laser = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,50,0)]),
-        new THREE.LineBasicMaterial({ color: 0xFF00FF })
-    );
-    group.add(laser);
+    //const laser = new THREE.Line(
+    //    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,50,0)]),
+    //    new THREE.LineBasicMaterial({ color: 0xFF00FF })
+    //);
+    //group.add(laser);
 
     scene.add(group);
     powerups.push(group);
 }
 
 
-// --- 6. GAME LOOP ---
-const keys = { w: false, a: false, s: false, d: false, space: false, k: false };
-let cameraAngle = 0;
-const cameraRotationSpeed = 0.03;
-const currentLookAt = new THREE.Vector3(0, 0, 0);
+
 
 window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
@@ -763,6 +966,14 @@ function animate() {
     
     const rawDelta = clock.getDelta();
     const delta = Math.min(rawDelta, 0.05);
+
+    
+    // Update Player Animations (Human or Bike)
+    if (hasBike && bikeMixer) {
+        bikeMixer.update(delta);
+    } else if (playerMesh && mixer) {
+        mixer.update(delta);
+    }
 
     updateUI();
 
@@ -882,7 +1093,10 @@ function animate() {
     if (gameActive) {
         for (let i = powerups.length - 1; i >= 0; i--) {
             const p = powerups[i];
-            p.rotation.y += delta; 
+            // ... inside the powerups loop
+            if (p.userData.type !== 'bike') {
+                p.rotation.y += delta; 
+            }
             
             if (p.userData.active && playerGroup.position.distanceTo(p.position) < 2.5) {
                 if (p.userData.type === 'bike') {
@@ -954,9 +1168,15 @@ function animate() {
                 let rotDiff = targetRotation - playerMesh.rotation.y;
                 while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
                 while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
-                playerMesh.rotation.y += rotDiff * 0.1;
                 
-                if (isGrounded && currentAction !== animationsMap.get('Run')) {
+                const newRot = playerMesh.rotation.y + rotDiff * 0.1;
+                playerMesh.rotation.y = newRot;
+
+                // Add + Math.PI/2 (90 deg) or - Math.PI/2 (-90 deg) depending on the model
+                if (playerBikeMesh) playerBikeMesh.rotation.y = newRot + (Math.PI / 2);
+                
+                // HUMAN ANIMATION (Run)
+                if (!hasBike && isGrounded && currentAction !== animationsMap.get('Run')) {
                     const run = animationsMap.get('Run');
                     if (run) {
                         run.reset().fadeIn(0.2).play();
@@ -965,12 +1185,24 @@ function animate() {
                     }
                 }
                 
-                if (isGrounded && currentAction === animationsMap.get('Run')) {
+                // HUMAN ANIMATION SPEED
+                if (!hasBike && isGrounded && currentAction === animationsMap.get('Run')) {
                     currentAction.timeScale = (currentSpeed / BASE_SPEED) * 1.2; 
                 }
 
+                // BIKE ANIMATION: PLAY ALL WHEN MOVING
+                if (hasBike && bikeActions.length > 0) {
+                bikeActions.forEach(action => {
+                    action.paused = false; // Unpause
+                    action.play();         // Ensure it's active
+                 });
+            }                  
+
             } else {
-                if (isGrounded && currentAction !== animationsMap.get('Idle')) {
+                // IDLE STATE
+                
+                // HUMAN ANIMATION (Idle)
+                if (!hasBike && isGrounded && currentAction !== animationsMap.get('Idle')) {
                     const idle = animationsMap.get('Idle');
                     if (idle) {
                         idle.reset().fadeIn(0.2).play();
@@ -979,6 +1211,13 @@ function animate() {
                         currentAction.timeScale = 1.0;
                     }
                 }
+
+                // BIKE ANIMATION: STOP ALL WHEN IDLE
+                if (hasBike && bikeActions.length > 0) {
+                bikeActions.forEach(action => {
+                    action.paused = true; // Freeze exactly where it is
+                });
+            }
             }
 
             // 4. PHYSICS (Gravity)
@@ -1025,44 +1264,53 @@ function animate() {
             }
         }
 
-        // CAMERA
-        let targetPos, targetLook;
-        let targetFogNear, targetFogFar;
+    
 
-        if (isMapOpen) {
-            targetPos = playerGroup.position.clone().add(new THREE.Vector3(0, 200, 0)); 
-            targetLook = playerGroup.position.clone();
-            targetFogNear = 150;
-            targetFogFar = 800;
-            beaconGroup.scale.set(4, 4, 4); 
-            arrowMesh.scale.set(4, 4, 4);
-        } else {
-            const offset = new THREE.Vector3(0, 6, -10).applyAxisAngle(new THREE.Vector3(0,1,0), cameraAngle);
-            targetPos = playerGroup.position.clone().add(offset);
-            targetLook = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 0));
-            targetFogNear = 1500; 
-            targetFogFar = 3000;
-            beaconGroup.scale.set(1, 1, 1);
-            arrowMesh.scale.set(1, 1, 1);
-        }
-
-        camera.position.lerp(targetPos, 0.1);
-        currentLookAt.lerp(targetLook, 0.1);
-        camera.lookAt(currentLookAt);
-        
-                scene.fog.near = THREE.MathUtils.lerp(scene.fog.near, targetFogNear, 0.05);
-        scene.fog.far = THREE.MathUtils.lerp(scene.fog.far, targetFogFar, 0.05);
-
-        // UPDATE BOKEH FOCUS (Keep player sharp)
-        if (playerGroup) {
-            const distToCam = camera.position.distanceTo(playerGroup.position);
-            bokehPass.uniforms['focus'].value = distToCam;
-        }
+// MODEL SWAP LOGIC
+    if (playerMesh && playerBikeMesh) {
+        playerMesh.visible = !hasBike;
+        playerBikeMesh.visible = hasBike;
     }
-
+    
     // RENDER WITH COMPOSER (Instead of renderer)
     composer.render();
 }
+
+// CAMERA
+     let targetPos, targetLook;
+     let targetFogNear, targetFogFar;
+
+     if (isMapOpen) {
+         targetPos = playerGroup.position.clone().add(new THREE.Vector3(0, 200, 0)); 
+        targetLook = playerGroup.position.clone();
+         targetFogNear = 150;
+         targetFogFar = 800;
+         beaconGroup.scale.set(4, 4, 4); 
+         arrowMesh.scale.set(4, 4, 4);
+     } else {
+        const offset = new THREE.Vector3(0, 6, -10).applyAxisAngle(new THREE.Vector3(0,1,0), cameraAngle);
+         targetPos = playerGroup.position.clone().add(offset);
+        targetLook = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 0));
+        targetFogNear = 1500; 
+         targetFogFar = 3000;
+         beaconGroup.scale.set(1, 1, 1);
+         arrowMesh.scale.set(1, 1, 1);
+     }
+
+    camera.position.lerp(targetPos, 0.1);
+    currentLookAt.lerp(targetLook, 0.1);
+    camera.lookAt(currentLookAt);
+        
+             scene.fog.near = THREE.MathUtils.lerp(scene.fog.near, targetFogNear, 0.05);
+    scene.fog.far = THREE.MathUtils.lerp(scene.fog.far, targetFogFar, 0.05);
+
+    // UPDATE BOKEH FOCUS (Keep player sharp)
+    if (playerGroup) {
+         const distToCam = camera.position.distanceTo(playerGroup.position);
+         bokehPass.uniforms['focus'].value = distToCam;
+      }
+ }
+
 animate();
 
 window.addEventListener('resize', () => {

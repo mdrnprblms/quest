@@ -209,5 +209,24 @@
         }
     </script>
     <script type="module" src="./game.js"></script>
+    <script>
+    // Prevent double-tap zoom
+    let lastTouchEnd = 0;
+    document.addEventListener('touchend', (event) => {
+        const now = (new Date()).getTime();
+        if (now - lastTouchEnd <= 300) {
+            event.preventDefault();
+        }
+        lastTouchEnd = now;
+    }, { passive: false });
+
+    // Prevent pinch zoom
+    document.addEventListener('touchmove', (event) => {
+        if (event.scale !== 1) { 
+            event.preventDefault(); 
+        }
+    }, { passive: false });
+</script>
+
 </body>
 </html>

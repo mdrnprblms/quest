@@ -13,30 +13,52 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 const loadingScreen = document.createElement('div');
 loadingScreen.id = 'loading-screen';
 loadingScreen.style.cssText = `
+    display: none; /* Hidden initially, shown when loading map */
     position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-    background: #000; color: #00ff00; display: flex; 
+    background: #111; color: #fff; 
     justify-content: center; align-items: center; 
     font-family: 'Courier New', Courier, monospace; 
-    font-size: 30px; font-weight: bold; z-index: 9999;
-    flex-direction: column;
+    z-index: 9999; flex-direction: column; text-align: center;
 `;
-loadingScreen.innerHTML = `<div>LOADING MAP...</div><div style="font-size:14px; margin-top:10px; opacity:0.7;">PLEASE WAIT</div>`;
+loadingScreen.innerHTML = `
+    <h1 style="font-size: 40px; margin-bottom: 20px; color: #ffff00; text-shadow: 2px 2px #000;">LOADING...</h1>
+    <div style="font-size: 14px; opacity: 0.7;">PREPARING SECTOR</div>
+`;
 document.body.appendChild(loadingScreen);
 
-// Define your maps array near the top of the file (with other configs) or right here
-const maps = ['shoreditch.glb', 'archway.glb', 'carnabyst.glb'];
-let currentMapIndex = 0; // Make sure this variable exists in your state variables
+// --- MENU FUNCTIONS ---
+window.showMapSelection = () => {
+    document.getElementById('menu-start').style.display = 'none';
+    document.getElementById('map-selection').style.display = 'flex';
+};
 
-window.switchMap = () => {
-    // Cycle to the next map index
-    currentMapIndex = (currentMapIndex + 1) % maps.length;
-    currentMapName = maps[currentMapIndex];
+window.backToMenu = () => {
+    document.getElementById('map-selection').style.display = 'none';
+    document.getElementById('menu-start').style.display = 'block';
+};
+
+window.showHighScores = () => {
+    alert("HIGH SCORES COMING SOON...");
+};
+
+window.selectMap = (mapName) => {
+    // 1. Hide Menu
+    document.getElementById('main-menu').style.display = 'none';
     
-    // Load the new map
+    // 2. Show HUD & Controls
+    document.getElementById('ui-container').style.display = 'block';
+    document.getElementById('mobile-controls').style.display = 'block';
+    
+    // 3. Start Game
+    currentMapName = mapName;
+    gameActive = true;
+    isTimerRunning = true;
+    timeLeft = START_TIME;
+    score = 0;
+    armor = 0;
+    isBusted = false;
+    
     loadLevel(currentMapName);
-    
-    // De-focus button so spacebar doesn't trigger it again
-    if (document.activeElement) document.activeElement.blur();
 };
 
 // --- MOBILE CONTROLS SETUP ---
@@ -80,6 +102,7 @@ setTimeout(() => {
 }, 500);
 
 // --- 1. CONFIGURATION ---
+const keys = { w: false, a: false, s: false, d: false, space: false, k: false };
 const START_TIME = 90.0;    
 const TIME_BONUS = 30.0;    
 const BASE_SPEED = 20.0; 
@@ -89,13 +112,13 @@ const DRINK_DURATION = 15.0;
 const POWERUP_SPAWN_RATE = 5.0; 
 
 // MAP & AI CONFIG
-const MAP_LIMIT = 4000;            
-const ENEMY_RUN_SPEED = 21.0;      
-const ENEMY_WALK_SPEED = 8.0;      
+const MAP_LIMIT = 4000;          
+const ENEMY_RUN_SPEED = 14.0;      // Was 21.0 (Reduced by ~30%)
+const ENEMY_WALK_SPEED = 5.0;      // Was 8.0  (Slower patrol)
 const ENEMY_VISION_DIST = 60.0;    
 const ENEMY_HEARING_DIST = 10.0;   
 const ENEMY_FOV = 135;             
-const ENEMY_CATCH_RADIUS = 3.5; 
+const ENEMY_CATCH_RADIUS = 3.5;
 
 // WANTED LEVEL CONFIG
 const WANTED_LEVEL_1_SCORE = 3; 
@@ -105,9 +128,9 @@ const WANTED_LEVEL_2_SCORE = 5;
 let score = 0;
 let armor = 0;
 let timeLeft = START_TIME;
-let gameActive = true;
+let gameActive = false;
 let isPaused = false; 
-let isTimerRunning = true;
+let isTimerRunning = false;
 let hasBike = false; 
 let drinkTimer = 0.0; 
 let isMapOpen = false; 
@@ -141,6 +164,17 @@ let activeEnemies = [];
 // MAP STATE
 let currentMapName = 'shoreditch.glb'; 
 
+//CUSTOMER MODEL
+let customerMixer = null
+
+//ROAD DATA
+let roadMeshes = []; // Stores the hidden DATA_ROADS mesh
+
+// BIKE MODEL VARIABLES
+let playerBikeMesh = null;
+let bikeMixer = null;
+let bikeTimer = 0; // Timer for how long the bike lasts
+
 // UI HELPERS
 function updateUI() {
     const uiScore = document.getElementById('score');
@@ -151,20 +185,15 @@ function updateUI() {
     const uiBike = document.getElementById('status-bike');
     const uiDrinkTimer = document.getElementById('drink-timer');
     
-    const warningUI = document.getElementById('zone-warning');
-    if (warningUI) warningUI.style.display = 'none';
+    // Ensure warning UI is hidden if it exists
+    //const warningUI = document.getElementById('zone-warning');
+    //if (warningUI) warningUI.style.display = 'none';
 
     if(uiScore) {
-        let status = "WALKING";
-        if (hasBike && drinkTimer > 0) status = "STACKING IT"; 
-        else if (hasBike) status = "ON BIKE";
-        else if (drinkTimer > 0) status = "SUGAR RUSH";
-        
         let wantedStars = "";
         if (score >= WANTED_LEVEL_2_SCORE) wantedStars = "★★";
         else if (score >= WANTED_LEVEL_1_SCORE) wantedStars = "★";
-        
-        uiScore.innerText = `${score} | 🛡️ ${armor} | ${status} ${wantedStars}`;
+        uiScore.innerText = `Deliveries: ${score} | 🛡️ ${armor} ${wantedStars}`;
     }
 
     if(uiTimer) {
@@ -187,7 +216,7 @@ function updateUI() {
     if(uiPause) uiPause.style.display = isPaused ? "block" : "none";
     
     if(uiGameOver) {
-        if (!gameActive) {
+        if (!gameActive && timeLeft <= 0 || isBusted) {
             uiGameOver.style.display = "block";
             if (isBusted) {
                 uiGameOver.innerText = "BUSTED";
@@ -210,7 +239,7 @@ camera.position.set(0, 20, 20);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); 
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
 renderer.useLegacyLights = false; 
@@ -224,9 +253,9 @@ const renderPass = new RenderPass(scene, camera);
 composer.addPass(renderPass);
 
 const bokehPass = new BokehPass(scene, camera, {
-    focus: 10.0,       // Distance to focus on (will update dynamically)
-    aperture: 0.00005,  // Blur strength (0.0001 is subtle, 0.0002 is strong)
-    maxblur: 0.01,     // Max blur level
+    focus: 10.0,       
+    aperture: 0.00002, 
+    maxblur: 0.01,     
     width: window.innerWidth,
     height: window.innerHeight
 });
@@ -235,10 +264,9 @@ composer.addPass(bokehPass);
 const outputPass = new OutputPass();
 composer.addPass(outputPass);
 
-// --- DRACO LOADER SETUP (For your compressed Archway map) ---
+// --- DRACO LOADER SETUP ---
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
-// Note: We will attach this to the main loader below
 
 // --- 3. LIGHTING ---
 const hemiLight = new THREE.HemisphereLight(0x333366, 0x404040, 2.5);
@@ -291,7 +319,7 @@ initEnvironment();
 
 // --- 4. ASSETS ---
 const loader = new GLTFLoader();
-loader.setDRACOLoader(dracoLoader); // <--- Add this line
+loader.setDRACOLoader(dracoLoader);
 
 const cityGroup = new THREE.Group();
 scene.add(cityGroup);
@@ -309,17 +337,84 @@ playerGroup.add(playerFillLight);
 const beaconGroup = new THREE.Group();
 scene.add(beaconGroup);
 
-// BEACON
-const beaconMesh = new THREE.Mesh(
-    new THREE.CylinderGeometry(2, 2, 80, 16), 
-    new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.5 })
-);
-beaconMesh.position.y = 40; 
-beaconGroup.add(beaconMesh);
+// OLD BEACON CODE
+//const beaconMesh = new THREE.Mesh(
+//    new THREE.CylinderGeometry(2, 2, 80, 16), 
+//    new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.5 })
+//);
+//beaconMesh.position.y = 40; 
+//beaconGroup.add(beaconMesh);
 
-const beaconLight = new THREE.PointLight(0x00ff00, 800, 100);
-beaconLight.position.y = 10;
-beaconGroup.add(beaconLight);
+// BEACON (CUSTOMER LOADER)
+loader.load('customer.glb', (gltf) => {
+    const customerModel = gltf.scene;
+    
+    // Adjust scale to match your game's scale (Player is approx 2.0)
+    customerModel.scale.set(5.0, 5.0, 5.0); 
+
+    customerModel.traverse((o) => {
+        if (o.isMesh) {
+            o.castShadow = true;
+            o.receiveShadow = true;
+        }
+    });
+
+    beaconGroup.add(customerModel);
+
+    // Setup Animation
+    customerMixer = new THREE.AnimationMixer(customerModel);
+    const idleClip = THREE.AnimationClip.findByName(gltf.animations, 'Idle');
+    
+    if (idleClip) {
+        customerMixer.clipAction(idleClip).play();
+    } else {
+        console.warn('Idle animation not found in customer.glb');
+    }
+
+}, undefined, (err) => console.error("Customer Load Error:", err));
+
+// BEACON LIGHT CODE
+//const beaconLight = new THREE.PointLight(0x00ff00, 800, 100);
+//beaconLight.position.y = 10;
+//beaconGroup.add(beaconLight);
+
+// --- BIKE PLAYER MODEL LOADER ---
+loader.load('playerbike.glb', (gltf) => {
+    playerBikeMesh = gltf.scene;
+    playerBikeMesh.scale.set(2.0, 2.0, 2.0);
+    // Note: Rotation is handled in animate()
+    playerBikeMesh.visible = false;      
+
+    playerBikeMesh.traverse(o => { 
+        if (o.isMesh) { 
+            o.castShadow = true; 
+            o.receiveShadow = true; 
+            
+            // MATERIAL FIXES (Prevent black model)
+            if (o.material) {
+                o.material.metalness = 0.0; 
+                o.material.roughness = 0.8; 
+                if (o.material.color) o.material.color.set(0xffffff);
+            }
+        } 
+    });
+
+    playerGroup.add(playerBikeMesh);
+
+    // SETUP ANIMATIONS: Play ALL clips found in the file simultaneously
+    bikeMixer = new THREE.AnimationMixer(playerBikeMesh);
+    
+    if (gltf.animations.length > 0) {
+        gltf.animations.forEach((clip) => {
+            const action = bikeMixer.clipAction(clip);
+            action.play();
+        });
+        console.log(`Playing ${gltf.animations.length} bike animations.`);
+    } else {
+        console.warn("No animations found in playerbike.glb");
+    }
+
+}, undefined, (err) => console.error("Player Bike Error:", err));
 
 // ARROW
 const arrowMesh = new THREE.Mesh(
@@ -330,8 +425,20 @@ arrowMesh.geometry.rotateX(Math.PI / 2);
 arrowMesh.position.y = 6; 
 playerGroup.add(arrowMesh);
 
+// Helper to check if an object or ANY of its parents has a specific name (Case-Insensitive)
+function isDescendantOf(child, nameIdentifier) {
+    let curr = child;
+    const searchStr = nameIdentifier.toLowerCase();
+    while (curr) {
+        if (curr.name && curr.name.toLowerCase().includes(searchStr)) return true;
+        curr = curr.parent;
+    }
+    return false;
+}
+
 // --- MAP LOADER FUNCTION ---
 function loadLevel(mapName) {
+    roadMeshes = [];
     console.log("Loading Map:", mapName);
     document.getElementById('loading-screen').style.display = 'flex';
     
@@ -352,18 +459,42 @@ function loadLevel(mapName) {
         map.position.x += (map.position.x - center.x);
         map.position.z += (map.position.z - center.z);
         map.position.y = -0.2; 
-
+        
         map.traverse((child) => {
             if (child.isMesh) {
-                if (child.name.includes("Border") || child.name.includes("border")) {
+                // 1. Identify Road Data (Case-Insensitive)
+                const isRoad = isDescendantOf(child, 'DATA_ROADS');
+
+                if (isRoad) {
+                    console.log("✅ Road Detected & Moved Underground:", child.name);
+                    
+                    // NUCLEAR OPTION: Move road data deep underground
+                    child.position.y = -500; 
+                    child.updateMatrix(); 
+                    
+                    // Force DoubleSide so Raycaster always hits it
+                    if(!child.material) child.material = new THREE.MeshBasicMaterial();
+                    child.material.side = THREE.DoubleSide;
+                    
+                    // Keep visible for Raycaster, but hide from Camera
+                    child.visible = true; 
+                    if (child.material) child.material.visible = false;
+                    
+                    roadMeshes.push(child);
+                    // Do NOT add to colliderMeshes
+                } 
+                // 2. Handle Borders
+                else if (child.name.toLowerCase().includes("border")) {
                     child.visible = false;       
                     colliderMeshes.push(child);  
                 } 
+                // 3. Handle Regular City Geometry
                 else if (child.name !== "IGNORE_ME") {
                     child.castShadow = true;
                     child.receiveShadow = true;
                     child.name = "CITY_MESH"; 
                     colliderMeshes.push(child);
+                    
                     if (child.material) {
                         child.material.roughness = 0.9;
                         child.material.metalness = 0.1;
@@ -373,20 +504,37 @@ function loadLevel(mapName) {
             }
         });
         
-        cityGroup.add(map);
+       // ... inside loadLevel, replacing the spawn attempts section ...
 
+        cityGroup.add(map);
         cityGroup.updateMatrixWorld(true);
+
+        // Attempt 1: Ideal conditions (Roads, away from center)
+        console.log("Attempting Spawn 1: Strict Roads, Outer Ring");
         let startPos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 500, 3000);
-        if (!startPos) startPos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, 3000);
+        
+        // Attempt 2: Relaxed conditions (Roads, anywhere on map)
+        if (!startPos) {
+            console.log("⚠️ Spawn 1 failed. Retrying Spawn 2: Strict Roads, Whole Map");
+            startPos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, 3000);
+        }
+
+        // Attempt 3: EMERGENCY MODE (Ignore Road Data entirely)
+        if (!startPos) {
+            console.warn("⚠️ All Road Spawns Failed. EMERGENCY SPAWN: Dropping on any floor.");
+            startPos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, 3000, true); 
+        }
 
         if (startPos) {
+            console.log("✅ Spawn Success at:", startPos);
             playerGroup.position.copy(startPos);
-            playerGroup.position.y += 5.0; 
+            playerGroup.position.y += 2.0; 
             verticalVelocity = 0; 
         } else {
-            console.error("Could not find spawn point, defaulting to 0,20,0");
-            playerGroup.position.set(0, 20, 0); 
+            console.error("CRITICAL: No spawn point found anywhere. Player may fall.");
+            playerGroup.position.set(0, 30, 0); 
         }
+
         
         spawnBeacon();
         spawnPowerup(); 
@@ -399,8 +547,6 @@ function loadLevel(mapName) {
         document.getElementById('loading-screen').style.display = 'none';
     });
 }
-
-loadLevel(currentMapName);
 
 // --- PLAYER LOADER ---
 let playerMesh;
@@ -517,8 +663,13 @@ function canMove(position, direction) {
     return true; 
 }
 
-function getAnywhereSpawnPoint(centerPos, minRadius, maxRadius) {
+function getAnywhereSpawnPoint(centerPos, minRadius, maxRadius, ignoreRoads = false) {
     const maxTries = 50; 
+    const useRoadData = roadMeshes.length > 0 && !ignoreRoads;
+    
+    // We check against EVERYTHING: Buildings, Floor, and the Underground Road
+    const spawnCheckList = useRoadData ? [...colliderMeshes, ...roadMeshes] : colliderMeshes;
+
     for (let i = 0; i < maxTries; i++) {
         let radius = minRadius + Math.random() * (maxRadius - minRadius);
         let angle = Math.random() * Math.PI * 2;
@@ -529,25 +680,69 @@ function getAnywhereSpawnPoint(centerPos, minRadius, maxRadius) {
         
         if (Math.abs(testX) > MAP_LIMIT || Math.abs(testZ) > MAP_LIMIT) continue;
 
+        // Cast from high up
         raycaster.set(new THREE.Vector3(testX, 500, testZ), downVector);
-        const intersects = raycaster.intersectObjects(colliderMeshes, false);
+        
+        const intersects = raycaster.intersectObjects(spawnCheckList, false);
         
         if (intersects.length > 0) {
-            const hit = intersects[0];
-            if (hit.point.y > -20 && hit.point.y < 50) {
-                return new THREE.Vector3(testX, hit.point.y + 2.0, testZ);
+            if (useRoadData) {
+                let hitRoad = false;
+                let hitRoof = false;
+                let groundHeight = null;
+
+                for (let hit of intersects) {
+                    // 1. Did we hit the underground road?
+                    if (roadMeshes.includes(hit.object)) {
+                        hitRoad = true;
+                    } 
+                    // 2. Did we hit a Roof? (Increased threshold to 50 to catch high floors)
+                    else if (hit.point.y > 50) {
+                        hitRoof = true;
+                        break; 
+                    }
+                    // 3. Did we hit the Floor? (Widened window to -50 to 50)
+                    else if (hit.point.y > -50 && hit.point.y < 50) {
+                        groundHeight = hit.point.y;
+                    }
+                }
+
+                if (hitRoad && !hitRoof && groundHeight !== null) {
+                    return new THREE.Vector3(testX, groundHeight + 0.5, testZ);
+                }
+
+            } else {
+                // FALLBACK (Relaxed height check for non-road mode too)
+                const hit = intersects[0];
+                if (hit.point.y > -50 && hit.point.y < 50) {
+                    return new THREE.Vector3(testX, hit.point.y + 2.0, testZ);
+                }
             }
         } 
     }
+    
+    if (useRoadData) console.warn(`Spawn failed in ${minRadius}-${maxRadius} (Strict Road Mode) - Floor likely missing or too high`);
     return null; 
 }
 
 function spawnBeacon() {
-    let pos = getAnywhereSpawnPoint(playerGroup.position, 50, 300);
+    // OLD: let pos = getAnywhereSpawnPoint(playerGroup.position, 50, 300);
+    
+    // NEW: 3x - 4x distance (150 min, 1200 max)
+    // This forces the game to find a spot much further away
+    let pos = getAnywhereSpawnPoint(playerGroup.position, 150, 1200);
+    
     if (pos) {
         beaconGroup.position.copy(pos);
     } else {
-        beaconGroup.position.set(playerGroup.position.x + 20, 0, playerGroup.position.z);
+        // Fallback: If it can't find a far spot, try a closer one
+        console.log("Could not find far spawn, trying closer...");
+        let closePos = getAnywhereSpawnPoint(playerGroup.position, 50, 300);
+        if (closePos) {
+             beaconGroup.position.copy(closePos);
+        } else {
+             beaconGroup.position.set(playerGroup.position.x + 20, 0, playerGroup.position.z);
+        }
     }
     updateWantedSystem();
 }
@@ -608,11 +803,16 @@ function createNewEnemy() {
     enemiesGroup.add(mesh);
     
     // 4. POSITION
-    let pos = getAnywhereSpawnPoint(beaconGroup.position, 10, 50);
+    // OLD: let pos = getAnywhereSpawnPoint(beaconGroup.position, 10, 50);
+    
+    // NEW: Spawn anywhere on the map (Radius 100 to 3000 from center)
+    let pos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 100, 3000);
+    
     if (pos) {
         mesh.position.copy(pos);
     } else {
-        mesh.position.copy(beaconGroup.position);
+        // Fallback: If random spawn fails, put them at 0,0
+        mesh.position.set(0, 0, 0);
     }
 
     // 5. ANIMATIONS (Your existing logic)
@@ -733,7 +933,7 @@ function createPowerupGroup(type, pos) {
 
 
 // --- 6. GAME LOOP ---
-const keys = { w: false, a: false, s: false, d: false, space: false, k: false };
+
 let cameraAngle = 0;
 const cameraRotationSpeed = 0.03;
 const currentLookAt = new THREE.Vector3(0, 0, 0);
@@ -764,15 +964,25 @@ function animate() {
     const rawDelta = clock.getDelta();
     const delta = Math.min(rawDelta, 0.05);
 
+    if (customerMixer) customerMixer.update(delta);
+
     updateUI();
 
     if (isPaused) return;
 
-    beaconMesh.material.opacity = 0.5 + Math.sin(clock.elapsedTime * 4) * 0.2;
-
     if (gameActive) {
         if (isTimerRunning) timeLeft -= delta;
+        
+        // Handle Powerup Timers
         if (drinkTimer > 0) drinkTimer -= delta;
+        if (bikeTimer > 0) {
+            bikeTimer -= delta;
+            if (bikeTimer <= 0) {
+                hasBike = false; // Bike expired
+                bikeTimer = 0;
+            }
+        }
+        
         spawnTimer += delta;
         if (spawnTimer > POWERUP_SPAWN_RATE) {
             spawnPowerup();
@@ -786,248 +996,255 @@ function animate() {
         }
     }
 
-    // --- STEALTH & PATROL AI LOGIC ---
-    if (gameActive) {
-        activeEnemies.forEach((enemy) => {
-            if (enemy.mixer) enemy.mixer.update(delta);
-            
-            const distToPlayer = enemy.groupRef.position.distanceTo(playerGroup.position);
-            
-            let detected = false;
-            
-            if (distToPlayer < ENEMY_HEARING_DIST) {
-                detected = true;
-            } 
-            else if (distToPlayer < ENEMY_VISION_DIST) {
-                const enemyFwd = new THREE.Vector3(0, 0, 1);
-                enemyFwd.applyQuaternion(enemy.groupRef.quaternion).normalize();
-                const toPlayer = new THREE.Vector3().subVectors(playerGroup.position, enemy.groupRef.position).normalize();
-                const angleRad = enemyFwd.angleTo(toPlayer);
-                const angleDeg = THREE.MathUtils.radToDeg(angleRad);
-                if (angleDeg < (ENEMY_FOV / 2)) {
-                    detected = true;
-                }
-            }
-
-            if (detected) {
-                enemy.state = 'CHASE';
-            } else if (enemy.state === 'CHASE' && distToPlayer > ENEMY_VISION_DIST * 1.5) {
-                enemy.state = 'PATROL';
-                enemy.patrolTarget = null; 
-            }
-
-            if (enemy.state === 'CHASE') {
-                enemy.groupRef.lookAt(playerGroup.position.x, enemy.groupRef.position.y, playerGroup.position.z);
-                const enemyDir = new THREE.Vector3().subVectors(playerGroup.position, enemy.groupRef.position).normalize();
-                enemy.groupRef.position.addScaledVector(enemyDir, ENEMY_RUN_SPEED * delta);
+    // --- 1. POWERUP COLLISION CHECK (New Logic) ---
+    if (gameActive && playerGroup) {
+        powerups.forEach((p) => {
+            if (p.visible && playerGroup.position.distanceTo(p.position) < 3.0) {
+                // Collect Powerup
+                p.visible = false; 
+                p.position.y = -100; // Move out of way
                 
-                if (distToPlayer < ENEMY_CATCH_RADIUS) {
-                    gameActive = false;
-                    isBusted = true;
-                    if (currentAction) currentAction.stop();
-                    if (enemy.actions['Hook'] && enemy.currentAction !== enemy.actions['Hook']) {
-                        enemy.actions['Hook'].reset().play();
-                        if (enemy.currentAction) enemy.currentAction.stop();
-                        enemy.currentAction = enemy.actions['Hook'];
-                    }
+                if (p.userData.type === 'bike') {
+                    hasBike = true;
+                    bikeTimer = 30.0; // Bike lasts 30 seconds
+                    timeLeft += 10;
+                } 
+                else if (p.userData.type === 'drink') {
+                    drinkTimer = 15.0;
                 }
-                
-                if (enemy.actions['Chase'] && enemy.currentAction !== enemy.actions['Chase']) {
-                    enemy.actions['Chase'].reset().play();
-                    if (enemy.currentAction) enemy.currentAction.fadeOut(0.2);
-                    enemy.currentAction = enemy.actions['Chase'];
+                else if (p.userData.type.includes('armor')) {
+                    armor++;
                 }
-            } 
-            
-            else if (enemy.state === 'PATROL') {
-                if (!enemy.patrolTarget) {
-                    let p = getAnywhereSpawnPoint(enemy.groupRef.position, 10, 40);
-                    if (p) enemy.patrolTarget = p;
-                    enemy.patrolTimer = 0;
-                }
-                
-                const distToTarget = enemy.groupRef.position.distanceTo(enemy.patrolTarget);
-                
-                if (distToTarget < 2.0) {
-                    enemy.patrolTimer += delta;
-                    if (enemy.patrolTimer > 2.0) {
-                        enemy.patrolTarget = null; 
-                    }
-                    if (enemy.actions['Idle'] && enemy.currentAction !== enemy.actions['Idle']) {
-                        enemy.actions['Idle'].reset().play();
-                        if (enemy.currentAction) enemy.currentAction.fadeOut(0.2);
-                        enemy.currentAction = enemy.actions['Idle'];
-                    }
-                } else {
-                    enemy.groupRef.lookAt(enemy.patrolTarget.x, enemy.groupRef.position.y, enemy.patrolTarget.z);
-                    const walkDir = new THREE.Vector3().subVectors(enemy.patrolTarget, enemy.groupRef.position).normalize();
-                    enemy.groupRef.position.addScaledVector(walkDir, ENEMY_WALK_SPEED * delta);
-                    
-                    if (enemy.actions['Patrol'] && enemy.currentAction !== enemy.actions['Patrol']) {
-                        enemy.actions['Patrol'].reset().play();
-                        if (enemy.currentAction) enemy.currentAction.fadeOut(0.2);
-                        enemy.currentAction = enemy.actions['Patrol'];
-                    }
-                }
-            }
-
-            raycaster.set(new THREE.Vector3(enemy.groupRef.position.x, 300, enemy.groupRef.position.z), downVector);
-            const hits = raycaster.intersectObjects(colliderMeshes, false);
-            if (hits.length > 0) {
-                enemy.groupRef.position.y = THREE.MathUtils.lerp(enemy.groupRef.position.y, hits[0].point.y, 5 * delta);
             }
         });
     }
 
-    if (gameActive) {
-        for (let i = powerups.length - 1; i >= 0; i--) {
-            const p = powerups[i];
-            p.rotation.y += delta; 
-            
-            if (p.userData.active && playerGroup.position.distanceTo(p.position) < 2.5) {
-                if (p.userData.type === 'bike') {
-                    hasBike = true;
-                } else if (p.userData.type === 'drink') {
-                    drinkTimer = DRINK_DURATION;
-                } else if (p.userData.type === 'armor_tee') {
-                    armor += 2; 
-                } else if (p.userData.type === 'armor_belt') {
-                    armor += 1; 
-                }
-                
-                scene.remove(p);
-                p.userData.active = false;
-                powerups.splice(i, 1);
-            }
+    // --- 2. MODEL SWAP LOGIC ---
+    // Ensure both meshes exist before trying to swap
+    if (playerMesh && playerBikeMesh) {
+        if (hasBike) {
+            // SHOW BIKE, HIDE HUMAN
+            playerMesh.visible = false;
+            playerBikeMesh.visible = true;
+            if (bikeMixer) bikeMixer.update(delta);
+        } else {
+            // SHOW HUMAN, HIDE BIKE
+            playerMesh.visible = true;
+            playerBikeMesh.visible = false;
+            if (mixer) mixer.update(delta); // Only animate human when visible
         }
+    } else if (playerMesh && mixer) {
+        // Fallback if bike model isn't loaded yet
+        mixer.update(delta);
     }
 
-    if (playerMesh && mixer) {
-        mixer.update(delta);
+    // --- 3. EXISTING AI LOGIC ---
+    if (gameActive) {
+        activeEnemies.forEach((enemy) => {
+             if (enemy.mixer) enemy.mixer.update(delta);
+             
+             const distToPlayer = enemy.groupRef.position.distanceTo(playerGroup.position);
+             
+             let detected = false;
+             
+             if (distToPlayer < ENEMY_HEARING_DIST) {
+                 detected = true;
+             } 
+             else if (distToPlayer < ENEMY_VISION_DIST) {
+                 const enemyFwd = new THREE.Vector3(0, 0, 1);
+                 enemyFwd.applyQuaternion(enemy.groupRef.quaternion).normalize();
+                 const toPlayer = new THREE.Vector3().subVectors(playerGroup.position, enemy.groupRef.position).normalize();
+                 const angleRad = enemyFwd.angleTo(toPlayer);
+                 const angleDeg = THREE.MathUtils.radToDeg(angleRad);
+                 if (angleDeg < (ENEMY_FOV / 2)) {
+                     detected = true;
+                 }
+             }
 
-        if (gameActive && !isMapOpen) {
+             if (detected) {
+                 enemy.state = 'CHASE';
+             } else if (enemy.state === 'CHASE' && distToPlayer > ENEMY_VISION_DIST * 1.5) {
+                 enemy.state = 'PATROL';
+                 enemy.patrolTarget = null; 
+             }
+
+             if (enemy.state === 'CHASE') {
+                 enemy.groupRef.lookAt(playerGroup.position.x, enemy.groupRef.position.y, playerGroup.position.z);
+                 const enemyDir = new THREE.Vector3().subVectors(playerGroup.position, enemy.groupRef.position).normalize();
+                 enemy.groupRef.position.addScaledVector(enemyDir, ENEMY_RUN_SPEED * delta);
+                 
+                 if (distToPlayer < ENEMY_CATCH_RADIUS) {
+                     gameActive = false;
+                     isBusted = true;
+                     if (currentAction) currentAction.stop();
+                 }
+                 
+                 if (enemy.actions['Chase'] && enemy.currentAction !== enemy.actions['Chase']) {
+                     enemy.actions['Chase'].reset().play();
+                     if (enemy.currentAction) enemy.currentAction.fadeOut(0.2);
+                     enemy.currentAction = enemy.actions['Chase'];
+                 }
+             } 
+             
+             else if (enemy.state === 'PATROL') {
+                 if (!enemy.patrolTarget) {
+                     let p = getAnywhereSpawnPoint(enemy.groupRef.position, 10, 40);
+                     if (p) enemy.patrolTarget = p;
+                     enemy.patrolTimer = 0;
+                 }
+                 
+                 const distToTarget = enemy.groupRef.position.distanceTo(enemy.patrolTarget);
+                 
+                 if (distToTarget < 2.0) {
+                     enemy.patrolTimer += delta;
+                     if (enemy.patrolTimer > 2.0) {
+                         enemy.patrolTarget = null; 
+                     }
+                     if (enemy.actions['Idle'] && enemy.currentAction !== enemy.actions['Idle']) {
+                         enemy.actions['Idle'].reset().play();
+                         if (enemy.currentAction) enemy.currentAction.fadeOut(0.2);
+                         enemy.currentAction = enemy.actions['Idle'];
+                     }
+                 } else {
+                     enemy.groupRef.lookAt(enemy.patrolTarget.x, enemy.groupRef.position.y, enemy.patrolTarget.z);
+                     const walkDir = new THREE.Vector3().subVectors(enemy.patrolTarget, enemy.groupRef.position).normalize();
+                     enemy.groupRef.position.addScaledVector(walkDir, ENEMY_WALK_SPEED * delta);
+                     
+                     if (enemy.actions['Patrol'] && enemy.currentAction !== enemy.actions['Patrol']) {
+                         enemy.actions['Patrol'].reset().play();
+                         if (enemy.currentAction) enemy.currentAction.fadeOut(0.2);
+                         enemy.currentAction = enemy.actions['Patrol'];
+                     }
+                 }
+             }
+
+             raycaster.set(new THREE.Vector3(enemy.groupRef.position.x, 300, enemy.groupRef.position.z), downVector);
+             const hits = raycaster.intersectObjects(colliderMeshes, false);
+             if (hits.length > 0) {
+                 enemy.groupRef.position.y = THREE.MathUtils.lerp(enemy.groupRef.position.y, hits[0].point.y, 5 * delta);
+             }
+        });
+    }
+    
+    // --- 4. PLAYER MOVEMENT & ROTATION ---
+    if (gameActive && !isMapOpen) {
+        let forward = 0;
+        if (keys.w) forward = 1;
+        if (keys.s) forward = -1;
+        if (Math.abs(joystickInput.y) > 0.1) forward = joystickInput.y > 0 ? 1 : -1;
+
+        if (keys.a) cameraAngle += cameraRotationSpeed;
+        if (keys.d) cameraAngle -= cameraRotationSpeed;
+        if (Math.abs(joystickInput.x) > 0.1) cameraAngle -= joystickInput.x * cameraRotationSpeed * 2.0;
+
+        // JUMP (Disable jumping if on bike)
+        if (keys.space && isGrounded && !jumpLocked) {
+            verticalVelocity = JUMP_FORCE;
+            isGrounded = false;
+            jumpLocked = true;
             
-            // 1. INPUT
-            let forward = 0;
-            if (keys.w) forward = 1;
-            if (keys.s) forward = -1;
-            if (Math.abs(joystickInput.y) > 0.1) forward = joystickInput.y > 0 ? 1 : -1;
-
-            if (keys.a) cameraAngle += cameraRotationSpeed;
-            if (keys.d) cameraAngle -= cameraRotationSpeed;
-            if (Math.abs(joystickInput.x) > 0.1) cameraAngle -= joystickInput.x * cameraRotationSpeed * 2.0;
-
-            // 2. JUMP
-            if (keys.space && isGrounded && !jumpLocked) {
-                verticalVelocity = JUMP_FORCE;
-                isGrounded = false;
-                jumpLocked = true; 
-                
-                if (animationsMap.has('Jump')) {
-                    const jumpAction = animationsMap.get('Jump');
-                    jumpAction.reset().setLoop(THREE.LoopOnce).play();
-                    jumpAction.clampWhenFinished = true;
-                    jumpAction.timeScale = 1.3; 
-                    if (currentAction && currentAction !== jumpAction) {
-                        currentAction.fadeOut(0.2);
-                    }
-                    currentAction = jumpAction;
-                }
-            }
-
-            // 3. MOVEMENT
-            if (forward !== 0) {
-                let currentSpeed = BASE_SPEED;
-                if (hasBike) currentSpeed *= BIKE_MULTIPLIER;
-                if (drinkTimer > 0) currentSpeed *= DRINK_MULTIPLIER;
-
-                const dirX = Math.sin(cameraAngle);
-                const dirZ = Math.cos(cameraAngle);
-                const moveVec = new THREE.Vector3(dirX * forward, 0, dirZ * forward).normalize();
-
-                if (canMove(playerGroup.position, moveVec)) {
-                    playerGroup.position.x += moveVec.x * currentSpeed * delta;
-                    playerGroup.position.z += moveVec.z * currentSpeed * delta;
-                }
-
-                const targetRotation = cameraAngle + (forward > 0 ? 0 : Math.PI); 
-                let rotDiff = targetRotation - playerMesh.rotation.y;
-                while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
-                while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
-                playerMesh.rotation.y += rotDiff * 0.1;
-                
-                if (isGrounded && currentAction !== animationsMap.get('Run')) {
-                    const run = animationsMap.get('Run');
-                    if (run) {
-                        run.reset().fadeIn(0.2).play();
-                        if (currentAction) currentAction.fadeOut(0.2);
-                        currentAction = run;
-                    }
-                }
-                
-                if (isGrounded && currentAction === animationsMap.get('Run')) {
-                    currentAction.timeScale = (currentSpeed / BASE_SPEED) * 1.2; 
-                }
-
-            } else {
-                if (isGrounded && currentAction !== animationsMap.get('Idle')) {
-                    const idle = animationsMap.get('Idle');
-                    if (idle) {
-                        idle.reset().fadeIn(0.2).play();
-                        if (currentAction) currentAction.fadeOut(0.2);
-                        currentAction = idle;
-                        currentAction.timeScale = 1.0;
-                    }
-                }
-            }
-
-            // 4. PHYSICS (Gravity)
-            verticalVelocity += GRAVITY * delta; 
-            playerGroup.position.y += verticalVelocity * delta;
-
-            raycaster.set(playerGroup.position.clone().add(new THREE.Vector3(0, 5, 0)), downVector);
-            const groundHits = raycaster.intersectObjects(colliderMeshes, false);
-
-            if (groundHits.length > 0) {
-                const hitY = groundHits[0].point.y;
-                const distToFloor = playerGroup.position.y - hitY;
-
-                if (verticalVelocity <= 0 && distToFloor < 0.5) {
-                    playerGroup.position.y = hitY; 
-                    verticalVelocity = 0;
-                    isGrounded = true;
-                } 
-                else if (isGrounded && distToFloor < 1.5) {
-                    playerGroup.position.y = THREE.MathUtils.lerp(playerGroup.position.y, hitY, 15 * delta);
-                    verticalVelocity = 0; 
-                }
-            }
-            
-            // 5. Fallback Check
-            if (playerGroup.position.y < -50) {
-                console.log("Respawning...");
-                let safeSpot = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, 200);
-                if (safeSpot) {
-                    playerGroup.position.copy(safeSpot);
-                    playerGroup.position.y += 5.0; 
-                } else {
-                    playerGroup.position.set(0, 20, 0); 
-                }
-                verticalVelocity = 0;
-                isGrounded = false;
-            }
-
-            arrowMesh.lookAt(beaconGroup.position.x, 4, beaconGroup.position.z);
-            if (playerGroup.position.distanceTo(beaconGroup.position) < 10) { 
-                score++;
-                timeLeft += TIME_BONUS;
-                spawnBeacon();
+            // Play Jump animation only if NOT on bike
+            if (!hasBike && animationsMap.has('Jump')) {
+                 const jumpAction = animationsMap.get('Jump');
+                 jumpAction.reset().setLoop(THREE.LoopOnce).play();
+                 currentAction = jumpAction;
             }
         }
 
-        // CAMERA
+        if (forward !== 0) {
+            let currentSpeed = BASE_SPEED;
+            if (hasBike) currentSpeed *= BIKE_MULTIPLIER;
+            if (drinkTimer > 0) currentSpeed *= DRINK_MULTIPLIER;
+
+            const dirX = Math.sin(cameraAngle);
+            const dirZ = Math.cos(cameraAngle);
+            const moveVec = new THREE.Vector3(dirX * forward, 0, dirZ * forward).normalize();
+
+            if (canMove(playerGroup.position, moveVec)) {
+                playerGroup.position.x += moveVec.x * currentSpeed * delta;
+                playerGroup.position.z += moveVec.z * currentSpeed * delta;
+            }
+
+            // ROTATION: Apply to both models so they stay synced
+            const targetRotation = cameraAngle + (forward > 0 ? 0 : Math.PI); 
+            let rotDiff = targetRotation - playerMesh.rotation.y;
+            while (rotDiff > Math.PI) rotDiff -= Math.PI * 2;
+            while (rotDiff < -Math.PI) rotDiff += Math.PI * 2;
+            
+            // ... inside the forward !== 0 block ...
+
+            // Apply smoothing
+            const smoothRot = playerMesh.rotation.y + (rotDiff * 0.1);
+            
+            // Apply rotation to Human (Normal)
+            if(playerMesh) playerMesh.rotation.y = smoothRot;
+            
+            // Apply rotation to Bike (With +90 Degree Offset)
+            // Math.PI / 2 radians = 90 degrees
+            if(playerBikeMesh) playerBikeMesh.rotation.y = smoothRot + (Math.PI / 2);
+
+            // Run Animation (Only if Human)
+            if (!hasBike && isGrounded && currentAction !== animationsMap.get('Run')) {
+                const run = animationsMap.get('Run');
+                if (run) {
+                    run.reset().play();
+                    if (currentAction) currentAction.stop();
+                    currentAction = run;
+                }
+            }
+            
+            // Bike Speed Animation: Increase speed of 'crunches' if moving
+            if (hasBike && bikeMixer) {
+                // You can add logic here to speed up the bike animation when moving
+            }
+
+        } else {
+            // Idle Animation (Only if Human)
+            if (!hasBike && isGrounded && currentAction !== animationsMap.get('Idle')) {
+                const idle = animationsMap.get('Idle');
+                if (idle) {
+                    idle.reset().play();
+                    if (currentAction) currentAction.stop();
+                    currentAction = idle;
+                }
+            }
+        }
+
+        // GRAVITY
+        verticalVelocity += GRAVITY * delta; 
+        playerGroup.position.y += verticalVelocity * delta;
+
+        // Floor Collision
+        raycaster.set(playerGroup.position.clone().add(new THREE.Vector3(0, 5, 0)), downVector);
+        const groundHits = raycaster.intersectObjects(colliderMeshes, false);
+        if (groundHits.length > 0) {
+            const hitY = groundHits[0].point.y;
+            const distToFloor = playerGroup.position.y - hitY;
+            
+            if (verticalVelocity <= 0 && distToFloor < 0.5) {
+                playerGroup.position.y = hitY;
+                verticalVelocity = 0;
+                isGrounded = true;
+            }
+            else if (isGrounded && distToFloor < 1.5) {
+                 playerGroup.position.y = THREE.MathUtils.lerp(playerGroup.position.y, hitY, 15 * delta);
+                 verticalVelocity = 0; 
+            }
+        }
+        
+        // Check Delivery
+        if (playerGroup.position.distanceTo(beaconGroup.position) < 10) { 
+             score++;
+             timeLeft += 60; // Bonus time
+             spawnBeacon();
+        }
+
+        // --- 5. CAMERA & FOG LOGIC (Missing Block) ---
         let targetPos, targetLook;
         let targetFogNear, targetFogFar;
+        
+        const distFromCenter = playerGroup.position.length();
+        const warningUI = document.getElementById('zone-warning');
 
         if (isMapOpen) {
             targetPos = playerGroup.position.clone().add(new THREE.Vector3(0, 200, 0)); 
@@ -1036,31 +1253,41 @@ function animate() {
             targetFogFar = 800;
             beaconGroup.scale.set(4, 4, 4); 
             arrowMesh.scale.set(4, 4, 4);
+            if (warningUI) warningUI.style.display = 'none';
         } else {
             const offset = new THREE.Vector3(0, 6, -10).applyAxisAngle(new THREE.Vector3(0,1,0), cameraAngle);
             targetPos = playerGroup.position.clone().add(offset);
             targetLook = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 0));
-            targetFogNear = 1500; 
-            targetFogFar = 3000;
             beaconGroup.scale.set(1, 1, 1);
             arrowMesh.scale.set(1, 1, 1);
+
+            // Dynamic Border Fog
+            const safeRadius = 3000;
+            if (distFromCenter > safeRadius) {
+                const dangerFactor = Math.min((distFromCenter - safeRadius) / (MAP_LIMIT - safeRadius), 1.0);
+                targetFogNear = THREE.MathUtils.lerp(1500, 50, dangerFactor);
+                targetFogFar  = THREE.MathUtils.lerp(3000, 500, dangerFactor);
+                if (warningUI) warningUI.style.display = dangerFactor > 0.5 ? 'block' : 'none';
+            } else {
+                targetFogNear = 1500; 
+                targetFogFar = 3000;
+                if (warningUI) warningUI.style.display = 'none';
+            }
         }
 
         camera.position.lerp(targetPos, 0.1);
         currentLookAt.lerp(targetLook, 0.1);
         camera.lookAt(currentLookAt);
         
-                scene.fog.near = THREE.MathUtils.lerp(scene.fog.near, targetFogNear, 0.05);
+        scene.fog.near = THREE.MathUtils.lerp(scene.fog.near, targetFogNear, 0.05);
         scene.fog.far = THREE.MathUtils.lerp(scene.fog.far, targetFogFar, 0.05);
 
-        // UPDATE BOKEH FOCUS (Keep player sharp)
         if (playerGroup) {
             const distToCam = camera.position.distanceTo(playerGroup.position);
             bokehPass.uniforms['focus'].value = distToCam;
         }
     }
 
-    // RENDER WITH COMPOSER (Instead of renderer)
     composer.render();
 }
 animate();
@@ -1068,10 +1295,8 @@ animate();
 window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
-    
     renderer.setSize(window.innerWidth, window.innerHeight);
-    composer.setSize(window.innerWidth, window.innerHeight); // <--- IMPORTANT ADDITION
-    
+    composer.setSize(window.innerWidth, window.innerHeight); // <--- Add this
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 });
 
@@ -1091,17 +1316,11 @@ window.debugSpawn = (forcedType) => {
     createPowerupGroup(forcedType, pos);
 };
 
-// Define your list of maps
-const mapList = ['shoreditch.glb', 'archway.glb', 'carnabyst.glb'];
-
 window.switchMap = () => {
-    // 1. Find where we are in the list
+    // Define your list of maps
+    const mapList = ['shoreditch.glb', 'archway.glb', 'carnabyst.glb'];
     let currentIndex = mapList.indexOf(currentMapName);
-    
-    // 2. Move to next one (loop back to 0 if at end)
     let nextIndex = (currentIndex + 1) % mapList.length;
-    
-    // 3. Set and Load
     currentMapName = mapList[nextIndex];
     loadLevel(currentMapName);
     

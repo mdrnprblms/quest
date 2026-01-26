@@ -726,26 +726,25 @@ function getAnywhereSpawnPoint(centerPos, minRadius, maxRadius, ignoreRoads = fa
 }
 
 function spawnBeacon() {
-    // OLD: let pos = getAnywhereSpawnPoint(playerGroup.position, 50, 300);
-    
-    // NEW: 3x - 4x distance (150 min, 1200 max)
-    // This forces the game to find a spot much further away
-    let pos = getAnywhereSpawnPoint(playerGroup.position, 150, 1200);
+    // FIX: Reduced max radius from 3000 to 2000 to keep it safe
+    let pos = getAnywhereSpawnPoint(playerGroup.position, 150, 2000);
     
     if (pos) {
         beaconGroup.position.copy(pos);
     } else {
-        // Fallback: If it can't find a far spot, try a closer one
         console.log("Could not find far spawn, trying closer...");
-        let closePos = getAnywhereSpawnPoint(playerGroup.position, 50, 300);
+        // Fallback radius
+        let closePos = getAnywhereSpawnPoint(playerGroup.position, 50, 500);
         if (closePos) {
              beaconGroup.position.copy(closePos);
         } else {
-             beaconGroup.position.set(playerGroup.position.x + 20, 0, playerGroup.position.z);
+             // Ultimate fallback
+             beaconGroup.position.set(0, 0, 0);
         }
     }
     updateWantedSystem();
 }
+
 
 function updateWantedSystem() {
     if (!policeTemplate || !policeClips) return;

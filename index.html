@@ -96,6 +96,8 @@
 
         #pause-screen {
             display: none;
+            flex-direction: column; /* Stacks the content vertically */
+            align-items: center;
             position: absolute;
             top: 50%;
             left: 50%;
@@ -105,6 +107,29 @@
             color: white;
             text-shadow: 5px 5px 8px #000;
             z-index: 200;
+        }
+
+        /* DEBUG BUTTONS -> UPGRADED TO MENU BUTTONS */
+        .debug-btn {
+            background: rgba(30, 30, 30, 0.9); 
+            color: white; 
+            border: 2px solid #555;
+            padding: 15px 30px; 
+            margin-bottom: 15px; 
+            cursor: pointer;
+            font-family: 'HelveticaBold', 'Helvetica', Arial, sans-serif; 
+            font-size: 16px; 
+            font-weight: bold;
+            display: block; 
+            width: 250px; /* Wider for mobile tapping */
+            border-radius: 8px;
+            text-transform: uppercase;
+            text-shadow: 1px 1px 3px #000;
+            transition: 0.1s;
+        }
+        .debug-btn:active { 
+            background: rgba(80, 80, 80, 0.9); 
+            border-color: #00ff00; 
         }
 
         #game-over {
@@ -178,13 +203,7 @@
             transform: scale(0.95);
         }
 
-        /* DEBUG BUTTONS */
-        .debug-btn {
-            background: #333; color: white; border: 1px solid #555;
-            padding: 8px 12px; margin-bottom: 5px; cursor: pointer;
-            font-family: 'HelveticaBold', sans-serif; font-size: 12px; display: block; width: 100%;
-        }
-        .debug-btn:active { background: #555; }
+    
 
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.10.1/nipplejs.min.js"></script>
@@ -216,15 +235,14 @@
 
     <div id="zone_joystick"></div>
     <div id="mobile-jump">JUMP</div>
-
-    <div style="position: absolute; top: 10px; right: 10px; z-index: 100; width: 120px;">
-        <button class="debug-btn" onclick="window.switchMap()">SWITCH MAP</button>
-        <button class="debug-btn" onclick="window.debugSpawn('bike')">Spawn Bike</button>
-        <button class="debug-btn" onclick="window.debugSpawn('drink')">Spawn Drink</button>
-        <button class="debug-btn" onclick="window.spawnPolice()">Spawn Police</button>
-    </div>
     
-    <div id="pause-screen">PAUSED</div>
+    <div id="pause-screen">
+        <div style="margin-bottom: 30px;">PAUSED</div>
+        <button class="debug-btn" onclick="window.switchMap()">SWITCH MAP</button>
+        <button class="debug-btn" onclick="window.debugSpawn('bike')">SPAWN BIKE</button>
+        <button class="debug-btn" onclick="window.debugSpawn('drink')">SPAWN DRINK</button>
+        <button class="debug-btn" onclick="window.spawnPolice()">SPAWN POLICE</button>
+    </div>
 
     <script type="importmap">
         {

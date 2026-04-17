@@ -325,7 +325,7 @@ function updateUI() {
         }
     }
     
-    if(uiPause) uiPause.style.display = isPaused ? "block" : "none";
+    if(uiPause) uiPause.style.display = isPaused ? "flex" : "none";
     
     // --- REPLACE WITH THIS ---
     if (uiGameOver) {

@@ -36,7 +36,7 @@ const mapSelectScreen = document.createElement('div');
 mapSelectScreen.id = 'map-select-screen';
 mapSelectScreen.style.cssText = `
     position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-    background: linear-gradient(rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.75)), url('menubg.jpg') center/cover no-repeat;
+    background: linear-gradient(rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.5)), url('menubg.jpg') center/cover no-repeat;
     display: flex; justify-content: center; align-items: center; flex-direction: column;
     z-index: 9998; font-family: 'Helvetica', Arial, sans-serif; color: white;
 `;

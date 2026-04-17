@@ -42,7 +42,7 @@ mapSelectScreen.style.cssText = `
 `;
 
 mapSelectScreen.innerHTML = `
-    <img src="mdrnquestlogo.png" alt="Mdrn Quest Logo" style="width: 30vw; max-width: 80%; margin-bottom: 10px;">
+    <img src="mdrnquestlogo.png" alt="Mdrn Quest Logo" style="width: 85vw; max-width: 400px; margin-bottom: 10px;">
     
     <h1 style="font-family: 'Medieval', serif; color: #ffffff; font-size: 35px; text-align: center; margin-bottom: 25px; text-shadow: 2px 2px 5px #000; padding: 0 20px;">SELECT YOUR ZONE</h1>
     

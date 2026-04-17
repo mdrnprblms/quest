@@ -16,6 +16,19 @@
             src: url('./helveticabold.ttf') format('truetype');
         }
 
+        .hud-btn {
+            font-family: 'HelveticaBold', sans-serif;
+            background: rgba(0, 0, 0, 0.6);
+            color: white;
+            border: 2px solid #555;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: bold;
+            cursor: pointer;
+            text-shadow: 1px 1px 3px #000;
+        }
+        .hud-btn:active { background: rgba(50, 50, 50, 0.8); }
 
         body { 
             font-family: 'HelveticaBold', sans-serif;
@@ -177,15 +190,10 @@
 <body>
     
     <div id="ui-container">
-        <h1>Mdrn Quest</h1>
-        <p class="score-text">Deliveries: <span id="score" class="highlight">0</span></p>
-        
-        <p class="instructions">
-            Deliver a pack to the green beacon<br>
-            <span style="font-size: 14px; opacity: 0.6;">Time Left: <span id="timer" class="highlight">60.0</span>s</span>
-        </p>
+        <p class="score-text" style="font-size: 20px; margin-bottom: 5px;">Deliveries: <span id="score" class="highlight">0</span></p>
+        <p class="score-text" style="font-size: 18px; margin-top: 0; opacity: 0.9;">Time Left: <span id="timer" class="highlight">60.0</span>s</p>
 
-        <div id="status-panel" style="margin-top: 10px; font-family: 'HelveticaBold', sans-serif; font-size: 16px;">
+        <div id="status-panel" style="margin-top: 10px; font-family: 'HelveticaBold', sans-serif; font-size: 14px;">
             <div id="status-bike" style="color: #32CD32; display: none; text-shadow: 2px 2px 4px #000;">
                 [ LIME BIKE ACTIVE ]
             </div>
@@ -194,9 +202,10 @@
             </div>
         </div>
         
-        <p class="instructions" style="font-size: 14px; margin-top: 20px; opacity: 0.6;">
-            [M] MAP &nbsp; [P] PAUSE
-        </p>
+        <div style="margin-top: 15px; display: flex; gap: 10px; pointer-events: auto;">
+            <button id="btn-map" class="hud-btn">MAP (M)</button>
+            <button id="btn-pause" class="hud-btn">PAUSE (P)</button>
+        </div>
 
         <div id="game-over">SHIFT ENDED</div>
     </div>

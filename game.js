@@ -42,26 +42,30 @@ mapSelectScreen.style.cssText = `
 `;
 
 mapSelectScreen.innerHTML = `
-    <h1 style="font-family: 'HelveticaBold', serif; color: #ffffff; font-size: 45px; text-align: center; margin-bottom: 40px; text-shadow: 2px 2px #000; padding: 0 20px;">SELECT YOUR ZONE</h1>
-    <div style="display: flex; gap: 30px; flex-wrap: wrap; justify-content: center;">
+    <img src="mdrnquestlogo.png" alt="Mdrn Quest Logo" style="width: 250px; max-width: 80%; margin-bottom: 10px;">
+    
+    <h1 style="font-family: 'Medieval', serif; color: #ffffff; font-size: 35px; text-align: center; margin-bottom: 25px; text-shadow: 2px 2px 5px #000; padding: 0 20px;">SELECT YOUR ZONE</h1>
+    
+    <div style="display: flex; gap: 15px; flex-wrap: wrap; justify-content: center; padding: 0 10px;">
         
-        <div class="map-card" data-map="shoreditch.glb" style="cursor: pointer; text-align: center; background: #222; padding: 15px; border-radius: 8px; border: 2px solid #444; transition: 0.2s;">
-            <img src="shoreditch.jpg" alt="Shoreditch" style="width: 200px; height: 130px; object-fit: cover; border-radius: 4px; margin-bottom: 10px;">
-            <div style="font-size: 20px; font-weight: bold;">SHOREDITCH</div>
+        <div class="map-card" data-map="shoreditch.glb" style="cursor: pointer; text-align: center; background: #222; padding: 10px; border-radius: 8px; border: 2px solid #444; transition: 0.2s; width: 40vw; max-width: 200px;">
+            <img src="shoreditch.jpg" alt="Shoreditch" style="width: 100%; height: 20vh; max-height: 130px; object-fit: cover; border-radius: 4px; margin-bottom: 10px;">
+            <div style="font-size: 16px; font-weight: bold;">SHOREDITCH</div>
         </div>
 
-        <div class="map-card" data-map="archway.glb" style="cursor: pointer; text-align: center; background: #222; padding: 15px; border-radius: 8px; border: 2px solid #444; transition: 0.2s;">
-            <img src="archway.jpg" alt="Archway" style="width: 200px; height: 130px; object-fit: cover; border-radius: 4px; margin-bottom: 10px;">
-            <div style="font-size: 20px; font-weight: bold; letter-spacing: 1px;">ARCHWAY</div>
+        <div class="map-card" data-map="archway.glb" style="cursor: pointer; text-align: center; background: #222; padding: 10px; border-radius: 8px; border: 2px solid #444; transition: 0.2s; width: 40vw; max-width: 200px;">
+            <img src="archway.jpg" alt="Archway" style="width: 100%; height: 20vh; max-height: 130px; object-fit: cover; border-radius: 4px; margin-bottom: 10px;">
+            <div style="font-size: 16px; font-weight: bold;">ARCHWAY</div>
         </div>
 
-        <div class="map-card" data-map="carnabyst.glb" style="cursor: pointer; text-align: center; background: #222; padding: 15px; border-radius: 8px; border: 2px solid #444; transition: 0.2s;">
-            <img src="carnabyst.jpg" alt="Carnaby St" style="width: 200px; height: 130px; object-fit: cover; border-radius: 4px; margin-bottom: 10px;">
-            <div style="font-size: 20px; font-weight: bold; letter-spacing: 1px;">CARNABY ST</div>
+        <div class="map-card" data-map="carnabyst.glb" style="cursor: pointer; text-align: center; background: #222; padding: 10px; border-radius: 8px; border: 2px solid #444; transition: 0.2s; width: 40vw; max-width: 200px;">
+            <img src="carnabyst.jpg" alt="Carnaby St" style="width: 100%; height: 20vh; max-height: 130px; object-fit: cover; border-radius: 4px; margin-bottom: 10px;">
+            <div style="font-size: 16px; font-weight: bold;">CARNABY ST</div>
         </div>
 
     </div>
 `;
+
 document.body.appendChild(mapSelectScreen);
 
 // Add click & hover events to the cards
@@ -177,6 +181,22 @@ setTimeout(() => {
         });
     }
 
+    const btnPause = document.getElementById('btn-pause');
+    if (btnPause) {
+        btnPause.addEventListener('click', (e) => { 
+            e.preventDefault(); 
+            isPaused = !isPaused; 
+        });
+    }
+
+    const btnMap = document.getElementById('btn-map');
+    if (btnMap) {
+        btnMap.addEventListener('click', (e) => { 
+            e.preventDefault(); 
+            isMapOpen = !isMapOpen; 
+        });
+    }
+
     const jumpBtn = document.getElementById('mobile-jump');
     if (jumpBtn) {
         jumpBtn.addEventListener('touchstart', (e) => {
@@ -283,7 +303,7 @@ function updateUI() {
         if (score >= WANTED_LEVEL_2_SCORE) wantedStars = "★★";
         else if (score >= WANTED_LEVEL_1_SCORE) wantedStars = "★";
         
-        uiScore.innerText = `${score} | 🛡️ ${armor} | ${status} ${wantedStars}`;
+        uiScore.innerText = `${score} | 🛡️ ${armor} ${wantedStars}`;
     }
 
     if(uiTimer) {

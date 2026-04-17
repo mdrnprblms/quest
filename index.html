@@ -11,7 +11,14 @@
             src: url('./blackletter.TTF') format('truetype'); 
         }
 
+        @font-face {
+            font-family: 'HelveticaBold';
+            src: url('./helveticabold.ttf') format('truetype');
+        }
+
+
         body { 
+            font-family: 'HelveticaBold', sans-serif;
             margin: 0; 
             overflow: hidden; 
             background-color: #111; 
@@ -21,6 +28,14 @@
             -webkit-user-select: none;
             user-select: none;
             touch-action: none; 
+
+            /* 1. The closest CSS equivalent to Optical Kerning */
+            text-rendering: optimizeLegibility;
+            font-kerning: normal;
+            font-feature-settings: "kern" 1;
+            
+            /* 2. Tracking set to -25 */
+            letter-spacing: -0.025em;
         }
 
         canvas { display: block; }
@@ -32,7 +47,7 @@
             color: white;
             user-select: none;
             pointer-events: none;
-            text-shadow: 4px 4px 0px #000;
+            text-shadow: 4px 4px 5px #000;
             z-index: 100;
         }
 
@@ -58,7 +73,7 @@
             opacity: 0.8;
             letter-spacing: 0.5px;
             text-transform: uppercase;
-            text-shadow: 2px 2px 0px #000;
+            text-shadow: 2px 2px 4px #000;
         }
 
         .highlight { color: #ffff00; }
@@ -73,7 +88,7 @@
             font-family: 'Medieval', serif;
             font-size: 100px;
             color: white;
-            text-shadow: 5px 5px 0px #000;
+            text-shadow: 5px 5px 8px #000;
             z-index: 200;
         }
 
@@ -83,7 +98,7 @@
             font-size: 80px; 
             color: #ff3333; 
             margin-top: 20px;
-            text-shadow: 4px 4px 0px #000;
+            text-shadow: 4px 4px 5px #000;
         }
 
         /* --- ZONE WARNING --- */
@@ -138,7 +153,7 @@
             font-weight: bold;
             font-size: 18px;
             z-index: 150;
-            text-shadow: 1px 1px 0 #000;
+            text-shadow: 1px 1px 4px #000;
             user-select: none;
             -webkit-user-select: none;
         }
@@ -152,7 +167,7 @@
         .debug-btn {
             background: #333; color: white; border: 1px solid #555;
             padding: 8px 12px; margin-bottom: 5px; cursor: pointer;
-            font-family: sans-serif; font-size: 12px; display: block; width: 100%;
+            font-family: 'HelveticaBold', sans-serif; font-size: 12px; display: block; width: 100%;
         }
         .debug-btn:active { background: #555; }
 
@@ -170,11 +185,11 @@
             <span style="font-size: 14px; opacity: 0.6;">Time Left: <span id="timer" class="highlight">60.0</span>s</span>
         </p>
 
-        <div id="status-panel" style="margin-top: 10px; font-family: 'Helvetica', sans-serif; font-size: 16px; font-weight: bold;">
-            <div id="status-bike" style="color: #32CD32; display: none; text-shadow: 2px 2px 0px #000;">
+        <div id="status-panel" style="margin-top: 10px; font-family: 'HelveticaBold', sans-serif; font-size: 16px;">
+            <div id="status-bike" style="color: #32CD32; display: none; text-shadow: 2px 2px 4px #000;">
                 [ LIME BIKE ACTIVE ]
             </div>
-            <div id="status-drink" style="color: #00FFFF; display: none; text-shadow: 2px 2px 0px #000;">
+            <div id="status-drink" style="color: #00FFFF; display: none; text-shadow: 2px 2px 4px #000;">
                 ENERGY: <span id="drink-timer">0.0</span>s
             </div>
         </div>

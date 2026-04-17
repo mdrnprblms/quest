@@ -14,13 +14,21 @@ const loadingScreen = document.createElement('div');
 loadingScreen.id = 'loading-screen';
 loadingScreen.style.cssText = `
     position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-    background: #000; color: #00ff00; display: none; 
+    background: #000; color: #afe6ff; display: none; 
     justify-content: center; align-items: center; 
-    font-family: 'Courier New', Courier, monospace; 
+    font-family: 'HelveticaBold', sans-serif;
     font-size: 30px; font-weight: bold; z-index: 9999;
     flex-direction: column;
 `;
-loadingScreen.innerHTML = `<div>LOADING MAP...</div><div style="font-size:14px; margin-top:10px; opacity:0.7;">PLEASE WAIT</div>`;
+// Change this line:
+// loadingScreen.innerHTML = `<div>LOADING MAP...</div><div style="font-size:14px; margin-top:10px; opacity:0.7;">PLEASE WAIT</div>`;
+
+// To this:
+loadingScreen.innerHTML = `
+    <img src="logonobg.png" alt="Mdrn Quest Logo" style="width: 300px; max-width: 80%; margin-bottom: 30px;">
+    <div>LOADING MAP...</div>
+    <div style="font-size:14px; margin-top:10px; opacity:0.7;">PLEASE WAIT</div>
+`;
 document.body.appendChild(loadingScreen);
 
 // --- MAP SELECTION SCREEN SETUP ---
@@ -28,13 +36,13 @@ const mapSelectScreen = document.createElement('div');
 mapSelectScreen.id = 'map-select-screen';
 mapSelectScreen.style.cssText = `
     position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(10, 10, 15, 0.95); display: flex; 
-    justify-content: center; align-items: center; flex-direction: column;
-    z-index: 9998; font-family: 'Courier New', Courier, monospace; color: white;
+    background: #0a0a0f; /* CHANGED: Solid background to hide game UI */
+    display: flex; justify-content: center; align-items: center; flex-direction: column;
+    z-index: 9998; font-family: 'Helvetica', Arial, sans-serif; color: white;
 `;
 
 mapSelectScreen.innerHTML = `
-    <h1 style="color: #00ff00; margin-bottom: 40px; text-shadow: 2px 2px #000;">SELECT YOUR ZONE</h1>
+    <h1 style="font-family: 'HelveticaBold', serif; color: #ffffff; font-size: 45px; text-align: center; margin-bottom: 40px; text-shadow: 2px 2px #000; padding: 0 20px;">SELECT YOUR ZONE</h1>
     <div style="display: flex; gap: 30px; flex-wrap: wrap; justify-content: center;">
         
         <div class="map-card" data-map="shoreditch.glb" style="cursor: pointer; text-align: center; background: #222; padding: 15px; border-radius: 8px; border: 2px solid #444; transition: 0.2s;">
@@ -44,12 +52,12 @@ mapSelectScreen.innerHTML = `
 
         <div class="map-card" data-map="archway.glb" style="cursor: pointer; text-align: center; background: #222; padding: 15px; border-radius: 8px; border: 2px solid #444; transition: 0.2s;">
             <img src="archway.jpg" alt="Archway" style="width: 200px; height: 130px; object-fit: cover; border-radius: 4px; margin-bottom: 10px;">
-            <div style="font-size: 20px; font-weight: bold;">ARCHWAY</div>
+            <div style="font-size: 20px; font-weight: bold; letter-spacing: 1px;">ARCHWAY</div>
         </div>
 
         <div class="map-card" data-map="carnabyst.glb" style="cursor: pointer; text-align: center; background: #222; padding: 15px; border-radius: 8px; border: 2px solid #444; transition: 0.2s;">
             <img src="carnabyst.jpg" alt="Carnaby St" style="width: 200px; height: 130px; object-fit: cover; border-radius: 4px; margin-bottom: 10px;">
-            <div style="font-size: 20px; font-weight: bold;">CARNABY ST</div>
+            <div style="font-size: 20px; font-weight: bold; letter-spacing: 1px;">CARNABY ST</div>
         </div>
 
     </div>
@@ -59,7 +67,7 @@ document.body.appendChild(mapSelectScreen);
 // Add click & hover events to the cards
 document.querySelectorAll('.map-card').forEach(card => {
     // Hover effects
-    card.addEventListener('mouseenter', () => card.style.borderColor = '#00ff00');
+    card.addEventListener('mouseenter', () => card.style.borderColor = '#ffffff');
     card.addEventListener('mouseleave', () => card.style.borderColor = '#444');
     
     // Click to start
@@ -314,12 +322,13 @@ function updateUI() {
             // Only update HTML if it's different to prevent resetting the button state
             if (!uiGameOver.getAttribute('data-shown')) {
                 uiGameOver.innerHTML = `
-                    <div style="font-size: 80px; color: ${color}; text-shadow: 2px 2px #000;">${titleText}</div>
-                    <div style="font-size: 24px; color: #fff;">SCORE: ${score}</div>
+                    <div style="font-family: 'Medieval', serif; font-size: 80px; color: ${color}; text-shadow: 2px 2px 5px #000; text-align: center;">${titleText}</div>
+                    <div style="font-family: 'HelveticaBold', sans-serif; font-size: 24px; color: #fff; font-weight: bold;">SCORE: ${score}</div>
                     <button id="retry-btn" style="
+                        margin-top: 10px;
                         padding: 15px 40px; 
-                        font-size: 24px; 
-                        font-family: 'Courier New', monospace; 
+                        font-size: 20px; 
+                        font-family: 'HelveticaBold', sans-serif; 
                         font-weight: bold; 
                         background: #fff; 
                         color: #000; 

@@ -36,13 +36,13 @@ const mapSelectScreen = document.createElement('div');
 mapSelectScreen.id = 'map-select-screen';
 mapSelectScreen.style.cssText = `
     position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-    background: #0a0a0f; /* CHANGED: Solid background to hide game UI */
+    background: linear-gradient(rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.75)), url('menubg.jpg') center/cover no-repeat;
     display: flex; justify-content: center; align-items: center; flex-direction: column;
     z-index: 9998; font-family: 'Helvetica', Arial, sans-serif; color: white;
 `;
 
 mapSelectScreen.innerHTML = `
-    <img src="mdrnquestlogo.png" alt="Mdrn Quest Logo" style="width: 250px; max-width: 80%; margin-bottom: 10px;">
+    <img src="mdrnquestlogo.png" alt="Mdrn Quest Logo" style="width: 30vw; max-width: 80%; margin-bottom: 10px;">
     
     <h1 style="font-family: 'Medieval', serif; color: #ffffff; font-size: 35px; text-align: center; margin-bottom: 25px; text-shadow: 2px 2px 5px #000; padding: 0 20px;">SELECT YOUR ZONE</h1>
     

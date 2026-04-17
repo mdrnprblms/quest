@@ -243,6 +243,7 @@ let policeClips = null;
 // BIKE VARIABLES
 let playerBikeMesh = null;
 let bikeMixer = null;
+let customerMixer = null;
 let bikeActions = []; // Stores all bike animations
 
 // ACTIVE ENEMIES LIST
@@ -471,6 +472,31 @@ beaconGroup.add(beaconMesh);
 const beaconLight = new THREE.PointLight(0x00ff00, 800, 100);
 beaconLight.position.y = 10;
 beaconGroup.add(beaconLight);
+
+//ADDING CUSTOMER MODEL
+loader.load('customer.glb', (gltf) => {
+    const customerMesh = gltf.scene;
+    customerMesh.scale.set(4.0, 4.0, 4.0); // Adjust size if needed
+    
+    customerMesh.traverse(o => { 
+        if (o.isMesh) { 
+            o.castShadow = true; 
+            o.receiveShadow = true; 
+        } 
+    });
+
+    beaconGroup.add(customerMesh);
+
+    // Setup animations using 'Pacing'
+    customerMixer = new THREE.AnimationMixer(customerMesh);
+    if (gltf.animations.length > 0) {
+        const clip = THREE.AnimationClip.findByName(gltf.animations, 'Pacing') || gltf.animations[0];
+        if (clip) {
+            const action = customerMixer.clipAction(clip);
+            action.play();
+        }
+    }
+}, undefined, (err) => console.error("Customer Model Error:", err));
 
 // ARROW
 const arrowMesh = new THREE.Mesh(
@@ -776,8 +802,9 @@ function spawnBeacon() {
     let pos = getAnywhereSpawnPoint(playerGroup.position, 400, 1500);
     
     if (pos) {
-        beaconGroup.position.copy(pos);
-    } else {
+    beaconGroup.position.copy(pos);
+    beaconGroup.position.y -= 2.0; // <--- Drop it exactly 2 units to the floor
+} else {
         // Fallback: If no valid spot found, put it 100 units away instead of 20
         beaconGroup.position.set(playerGroup.position.x + 100, 0, playerGroup.position.z);
     }
@@ -1019,6 +1046,13 @@ function animate() {
         mixer.update(delta);
     }
 
+    // --- NEW: UPDATE CUSTOMER ANIMATION ---
+    if (customerMixer) {
+        customerMixer.update(delta);
+    }
+
+
+    
     updateUI();
 
     if (isPaused) return;

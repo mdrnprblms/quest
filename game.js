@@ -756,15 +756,35 @@ loader.load('belt.glb', (gltf) => {
 const raycaster = new THREE.Raycaster();
 const downVector = new THREE.Vector3(0, -1, 0);
 
-function canMove(position, direction) {
-    const rayStart = position.clone();
-    rayStart.y += 1.5; 
-    raycaster.set(rayStart, direction);
-    const intersects = raycaster.intersectObjects(colliderMeshes, false); 
-    if (intersects.length > 0) {
-        if (intersects[0].distance < 1.5) return false; 
+function calculateMovement(position, moveVec, speed, delta) {
+    // 1. Calculate where the player WANTS to go
+    let finalMove = moveVec.clone().multiplyScalar(speed * delta);
+    
+    const checkDist = 1.0; // Player collision radius
+    const heights = [0.5, 1.5, 2.5]; // Check Ankles, Waist, and Head
+
+    for (let h of heights) {
+        const origin = position.clone();
+        origin.y += h;
+        
+        // Cast a ray in the direction we are moving
+        raycaster.set(origin, moveVec);
+        const hits = raycaster.intersectObjects(colliderMeshes, false);
+
+        if (hits.length > 0 && hits[0].distance < checkDist) {
+            // We hit a wall! Get the exact angle the wall is facing
+            const normal = hits[0].face.normal.clone();
+            const normalMatrix = new THREE.Matrix3().getNormalMatrix(hits[0].object.matrixWorld);
+            normal.applyMatrix3(normalMatrix).normalize();
+
+            // 2. VECTOR MATH: Project our movement along the wall plane to slide
+            const dot = finalMove.dot(normal);
+            if (dot < 0) { 
+                finalMove.sub(normal.multiplyScalar(dot));
+            }
+        }
     }
-    return true; 
+    return finalMove; // Return the adjusted "sliding" movement
 }
 
 function getAnywhereSpawnPoint(centerPos, minRadius, maxRadius) {
@@ -1268,10 +1288,10 @@ function animate() {
                 const dirZ = Math.cos(cameraAngle);
                 const moveVec = new THREE.Vector3(dirX * forward, 0, dirZ * forward).normalize();
 
-                if (canMove(playerGroup.position, moveVec)) {
-                    playerGroup.position.x += moveVec.x * currentSpeed * delta;
-                    playerGroup.position.z += moveVec.z * currentSpeed * delta;
-                }
+                // --- NEW: SLIDING COLLISION ---
+                const allowedMove = calculateMovement(playerGroup.position, moveVec, currentSpeed, delta);
+                playerGroup.position.add(allowedMove);
+                // ------------------------------
 
                 const targetRotation = cameraAngle + (forward > 0 ? 0 : Math.PI); 
                 let rotDiff = targetRotation - playerMesh.rotation.y;

@@ -30,12 +30,14 @@
         }
         .hud-btn:active { background: rgba(50, 50, 50, 0.8); }
 
-        body { 
+        html, body { 
             font-family: 'HelveticaBold', sans-serif;
             margin: 0; 
             overflow: hidden; 
             background-color: #111; 
             
+            overscroll-behavior: none;
+
             /* --- MOBILE TOUCH FIXES --- */
             -webkit-touch-callout: none;
             -webkit-user-select: none;

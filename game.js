@@ -14,7 +14,7 @@ const loadingScreen = document.createElement('div');
 loadingScreen.id = 'loading-screen';
 loadingScreen.style.cssText = `
     position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-    background: #000; color: #00ff00; display: flex; 
+    background: #000; color: #00ff00; display: none; 
     justify-content: center; align-items: center; 
     font-family: 'Courier New', Courier, monospace; 
     font-size: 30px; font-weight: bold; z-index: 9999;
@@ -22,6 +22,59 @@ loadingScreen.style.cssText = `
 `;
 loadingScreen.innerHTML = `<div>LOADING MAP...</div><div style="font-size:14px; margin-top:10px; opacity:0.7;">PLEASE WAIT</div>`;
 document.body.appendChild(loadingScreen);
+
+// --- MAP SELECTION SCREEN SETUP ---
+const mapSelectScreen = document.createElement('div');
+mapSelectScreen.id = 'map-select-screen';
+mapSelectScreen.style.cssText = `
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(10, 10, 15, 0.95); display: flex; 
+    justify-content: center; align-items: center; flex-direction: column;
+    z-index: 9998; font-family: 'Courier New', Courier, monospace; color: white;
+`;
+
+mapSelectScreen.innerHTML = `
+    <h1 style="color: #00ff00; margin-bottom: 40px; text-shadow: 2px 2px #000;">SELECT YOUR ZONE</h1>
+    <div style="display: flex; gap: 30px; flex-wrap: wrap; justify-content: center;">
+        
+        <div class="map-card" data-map="shoreditch.glb" style="cursor: pointer; text-align: center; background: #222; padding: 15px; border-radius: 8px; border: 2px solid #444; transition: 0.2s;">
+            <img src="shoreditch.jpg" alt="Shoreditch" style="width: 200px; height: 130px; object-fit: cover; border-radius: 4px; margin-bottom: 10px;">
+            <div style="font-size: 20px; font-weight: bold;">SHOREDITCH</div>
+        </div>
+
+        <div class="map-card" data-map="archway.glb" style="cursor: pointer; text-align: center; background: #222; padding: 15px; border-radius: 8px; border: 2px solid #444; transition: 0.2s;">
+            <img src="archway.jpg" alt="Archway" style="width: 200px; height: 130px; object-fit: cover; border-radius: 4px; margin-bottom: 10px;">
+            <div style="font-size: 20px; font-weight: bold;">ARCHWAY</div>
+        </div>
+
+        <div class="map-card" data-map="carnabyst.glb" style="cursor: pointer; text-align: center; background: #222; padding: 15px; border-radius: 8px; border: 2px solid #444; transition: 0.2s;">
+            <img src="carnabyst.jpg" alt="Carnaby St" style="width: 200px; height: 130px; object-fit: cover; border-radius: 4px; margin-bottom: 10px;">
+            <div style="font-size: 20px; font-weight: bold;">CARNABY ST</div>
+        </div>
+
+    </div>
+`;
+document.body.appendChild(mapSelectScreen);
+
+// Add click & hover events to the cards
+document.querySelectorAll('.map-card').forEach(card => {
+    // Hover effects
+    card.addEventListener('mouseenter', () => card.style.borderColor = '#00ff00');
+    card.addEventListener('mouseleave', () => card.style.borderColor = '#444');
+    
+    // Click to start
+    card.addEventListener('click', (e) => {
+        currentMapName = e.currentTarget.getAttribute('data-map');
+        mapSelectScreen.style.display = 'none'; // Hide menu
+        
+        // Reset timers and activate game
+        timeLeft = START_TIME; 
+        gameActive = true; 
+        
+        // Load the chosen map!
+        loadLevel(currentMapName);
+    });
+});
 
 // --- GAME LOOP ---
 const keys = { w: false, a: false, s: false, d: false, space: false, k: false };
@@ -34,14 +87,8 @@ const maps = ['shoreditch.glb', 'archway.glb', 'carnabyst.glb'];
 let currentMapIndex = 0; // Make sure this variable exists in your state variables
 
 window.switchMap = () => {
-    // Cycle to the next map index
-    currentMapIndex = (currentMapIndex + 1) % maps.length;
-    currentMapName = maps[currentMapIndex];
-    
-    // Load the new map
-    loadLevel(currentMapName);
-    
-    // De-focus button so spacebar doesn't trigger it again
+    gameActive = false; // Pause the game in the background
+    document.getElementById('map-select-screen').style.display = 'flex'; // Show menu
     if (document.activeElement) document.activeElement.blur();
 };
 
@@ -89,8 +136,7 @@ window.resetGame = () => {
     // 6. Spawn Initial Items
     spawnBeacon();
     
-    // MASSIVE SPAWN ON RESET
-    for(let i=0; i<50; i++) spawnPowerup(); 
+    spawnPowerup(); 
 
     // 7. Hide UI
     const uiGameOver = document.getElementById('game-over');
@@ -144,7 +190,7 @@ const BASE_SPEED = 20.0;
 const BIKE_MULTIPLIER = 1.8; 
 const DRINK_MULTIPLIER = 1.4; 
 const DRINK_DURATION = 15.0;
-const POWERUP_SPAWN_RATE = 0.5; // DRAMATICALLY INCREASED RATE (0.5s instead of 5.0s)
+const POWERUP_SPAWN_RATE = 5.0; // DRAMATICALLY INCREASED RATE (0.5s instead of 5.0s)
 
 // MAP & AI CONFIG
 const MAP_LIMIT = 4000;            
@@ -163,7 +209,7 @@ const WANTED_LEVEL_2_SCORE = 5;
 let score = 0;
 let armor = 0;
 let timeLeft = START_TIME;
-let gameActive = true;
+let gameActive = false;
 let isPaused = false; 
 let isTimerRunning = true;
 let hasBike = false; 
@@ -504,9 +550,7 @@ function loadLevel(mapName) {
         
         // --- MASSIVE POWERUP SPAWN ---
         // Spawn 100 random items immediately across the map
-        for(let i=0; i<100; i++) {
-            spawnPowerup();
-        }
+        spawnPowerup();
         
         document.getElementById('loading-screen').style.display = 'none';
 
@@ -517,7 +561,7 @@ function loadLevel(mapName) {
     });
 }
 
-loadLevel(currentMapName);
+//loadLevel(currentMapName);
 
 // --- PLAYER LOADER ---
 let playerMesh;
@@ -676,7 +720,7 @@ function getAnywhereSpawnPoint(centerPos, minRadius, maxRadius) {
     const maxTries = 200; 
     
     for (let i = 0; i < maxTries; i++) {
-        let radius = minRadius + Math.random() * (maxRadius - minRadius);
+        let radius = minRadius + Math.sqrt(Math.random()) * (maxRadius - minRadius);
         let angle = Math.random() * Math.PI * 2;
         let baseX = centerPos ? centerPos.x : 0;
         let baseZ = centerPos ? centerPos.z : 0;
@@ -1342,16 +1386,3 @@ window.debugSpawn = (forcedType) => {
 // Define your list of maps
 const mapList = ['shoreditch.glb', 'archway.glb', 'carnabyst.glb'];
 
-window.switchMap = () => {
-    // 1. Find where we are in the list
-    let currentIndex = mapList.indexOf(currentMapName);
-    
-    // 2. Move to next one (loop back to 0 if at end)
-    let nextIndex = (currentIndex + 1) % mapList.length;
-    
-    // 3. Set and Load
-    currentMapName = mapList[nextIndex];
-    loadLevel(currentMapName);
-    
-    if (document.activeElement) document.activeElement.blur();
-};

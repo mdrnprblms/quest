@@ -46,6 +46,8 @@ mapSelectScreen.innerHTML = `
     
     <h1 style="font-family: 'Medieval', serif; color: #ffffff; font-size: 35px; text-align: center; margin-bottom: 25px; text-shadow: 2px 2px 5px #000; padding: 0 20px;">SELECT YOUR ZONE</h1>
     
+    <p1 style="font-family: 'Helvetica', Arial, sans-serif; color: #cccccc; font-size: 16px; text-align: center; margin-bottom: 30px; max-width: 400px; padding: 0 20px;">Choose your starting zone and deliver your packages. All maps are built from real Google Maps data.</p1>
+
     <div style="display: flex; gap: 15px; flex-wrap: wrap; justify-content: center; padding: 0 10px;">
         
         <div class="map-card" data-map="shoreditch.glb" style="cursor: pointer; text-align: center; background: #222; padding: 10px; border-radius: 8px; border: 2px solid #444; transition: 0.2s; width: 40vw; max-width: 200px;">

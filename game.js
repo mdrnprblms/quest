@@ -564,7 +564,7 @@ function loadLevel(mapName) {
 
     loader.load(mapName, (gltf) => {
         const map = gltf.scene;
-        map.scale.set(3, 3, 3);
+        map.scale.set(3.5, 3.5, 3.5);
         
         const box = new THREE.Box3().setFromObject(map);
         const center = box.getCenter(new THREE.Vector3());
@@ -1415,10 +1415,24 @@ function animate() {
             }
             }
 
-                // 4. PHYSICS (Gravity) — runs every frame regardless of input
+                // 4. PHYSICS (Gravity)
                 verticalVelocity += GRAVITY * delta;
                 playerGroup.position.y += verticalVelocity * delta;
 
+                // Ceiling check — must run BEFORE ground check, while velocity is still upward
+                if (verticalVelocity > 0) {
+                    const ceilOrigin = playerGroup.position.clone();
+                    ceilOrigin.y += 0.1;
+                    raycaster.set(ceilOrigin, new THREE.Vector3(0, 1, 0));
+                    const ceilHits = raycaster.intersectObjects(colliderMeshes, false);
+                    if (ceilHits.length > 0 && ceilHits[0].distance < 2.5) {
+                        // Push player down so head clears the surface, kill upward velocity
+                        playerGroup.position.y = ceilHits[0].point.y - 1;
+                        verticalVelocity = 0;
+                    }
+                }
+
+                // Ground check
                 const groundOrigin = playerGroup.position.clone();
                 groundOrigin.y += 3.0;
                 raycaster.set(groundOrigin, downVector);

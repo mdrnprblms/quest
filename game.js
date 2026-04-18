@@ -9,6 +9,14 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
+// --- PHYSICS ACCELERATION ---
+import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
+
+// Silently upgrade Three.js with BVH acceleration
+THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
+THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
+
 // --- LOADING SCREEN SETUP ---
 const loadingScreen = document.createElement('div');
 loadingScreen.id = 'loading-screen';
@@ -260,6 +268,7 @@ let validRoadPositions = [];
 let colliderMeshes = []; 
 let roadMeshes = []; // NEW: Stores DATA_ROADS
 let powerups = []; 
+let groundMeshes = []; // Only flat/road geometry — used for ground snapping
 
 // Templates
 let bikeTemplate = null; 
@@ -545,7 +554,8 @@ function loadLevel(mapName) {
     
     while(cityGroup.children.length > 0){ cityGroup.remove(cityGroup.children[0]); }
     colliderMeshes = [];
-    roadMeshes = []; // Reset road meshes
+    roadMeshes = [];
+    groundMeshes = []; // ADD THIS
     validRoadPositions = [];
     powerups.forEach(p => scene.remove(p));
     powerups = [];
@@ -571,19 +581,28 @@ function loadLevel(mapName) {
                     roadMeshes.push(child);
                 }
                 else if (child.name.includes("Border") || child.name.includes("border")) {
-                    child.visible = false;       
-                    colliderMeshes.push(child);  
-                } 
+                    child.visible = false;
+                    if (child.geometry) child.geometry.computeBoundsTree(); // ADD THIS
+                    colliderMeshes.push(child);
+                }
                 else if (child.name !== "IGNORE_ME") {
                     child.castShadow = true;
                     child.receiveShadow = true;
                     child.name = "CITY_MESH"; 
+                    
+                    // --- NEW: BUILD SEARCH INDEX FOR THIS SPECIFIC TILE ---
+                    if (child.geometry) child.geometry.computeBoundsTree(); 
+                    
                     colliderMeshes.push(child); // Buildings / Ground
                     if (child.material) {
                         child.material.roughness = 0.9;
                         child.material.metalness = 0.1;
                         child.material.side = THREE.DoubleSide; 
                     }
+
+                    // Inside the traverse, after: colliderMeshes.push(child)
+                    // Add ground geometry (non-building, low Y faces) separately
+                    
                 }
             }
         });
@@ -591,6 +610,7 @@ function loadLevel(mapName) {
         cityGroup.add(map);
 
         cityGroup.updateMatrixWorld(true);
+        
         // Updated spawn call:
         let startPos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, 3000);
         
@@ -735,13 +755,13 @@ loader.load('monster_zero_ultra.glb', (gltf) => {
 
 loader.load('liontee.glb', (gltf) => {
     lionTeeTemplate = gltf.scene;
-    lionTeeTemplate.scale.set(5, 5, 5); 
+    lionTeeTemplate.scale.set(2.5, 2.5, 2.5); // <--- Dropped from 5
     lionTeeTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
 });
 
 loader.load('lionteegrey.glb', (gltf) => {
     lionTeeGreyTemplate = gltf.scene;
-    lionTeeGreyTemplate.scale.set(5, 5, 5);
+    lionTeeGreyTemplate.scale.set(2.5, 2.5, 2.5); // <--- Dropped from 5
     lionTeeGreyTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
 });
 
@@ -757,34 +777,66 @@ const raycaster = new THREE.Raycaster();
 const downVector = new THREE.Vector3(0, -1, 0);
 
 function calculateMovement(position, moveVec, speed, delta) {
-    // 1. Calculate where the player WANTS to go
     let finalMove = moveVec.clone().multiplyScalar(speed * delta);
-    
-    const checkDist = 1.0; // Player collision radius
-    const heights = [0.5, 1.5, 2.5]; // Check Ankles, Waist, and Head
+
+    const PLAYER_RADIUS = 1.2;  // Wider than before — catches corners
+    const PUSH_BACK = 0.05;     // Small push away from wall surface
+    const heights = [0.3, 1.2, 2.2]; // Ankles, waist, shoulders
+
+    // Fan angles: forward + 22.5 + 45 degrees either side
+    const fanAngles = [0, Math.PI / 8, -Math.PI / 8, Math.PI / 4, -Math.PI / 4];
+
+    // Side rays (perpendicular to movement, catches sliding edge cases)
+    const sideVec = new THREE.Vector3(-moveVec.z, 0, moveVec.x).normalize();
+    const sideOffsets = [-0.4, 0, 0.4];
+
+    const wallNormals = [];
 
     for (let h of heights) {
         const origin = position.clone();
         origin.y += h;
-        
-        // Cast a ray in the direction we are moving
-        raycaster.set(origin, moveVec);
-        const hits = raycaster.intersectObjects(colliderMeshes, false);
 
-        if (hits.length > 0 && hits[0].distance < checkDist) {
-            // We hit a wall! Get the exact angle the wall is facing
-            const normal = hits[0].face.normal.clone();
-            const normalMatrix = new THREE.Matrix3().getNormalMatrix(hits[0].object.matrixWorld);
-            normal.applyMatrix3(normalMatrix).normalize();
+        // --- Forward fan ---
+        for (let angle of fanAngles) {
+            const dir = moveVec.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), angle).normalize();
+            raycaster.set(origin, dir);
+            const hits = raycaster.intersectObjects(colliderMeshes, false);
+            if (hits.length > 0 && hits[0].distance < PLAYER_RADIUS) {
+                const normal = hits[0].face.normal.clone();
+                const nm = new THREE.Matrix3().getNormalMatrix(hits[0].object.matrixWorld);
+                normal.applyMatrix3(nm).normalize();
+                normal.y = 0; // Ignore vertical component — don't push up/down
+                if (normal.lengthSq() > 0.01) wallNormals.push(normal);
+            }
+        }
 
-            // 2. VECTOR MATH: Project our movement along the wall plane to slide
-            const dot = finalMove.dot(normal);
-            if (dot < 0) { 
-                finalMove.sub(normal.multiplyScalar(dot));
+        // --- Side rays (perpendicular) ---
+        for (let sOff of sideOffsets) {
+            const sOrigin = origin.clone().addScaledVector(sideVec, sOff);
+            raycaster.set(sOrigin, moveVec);
+            const hits = raycaster.intersectObjects(colliderMeshes, false);
+            if (hits.length > 0 && hits[0].distance < PLAYER_RADIUS * 0.8) {
+                const normal = hits[0].face.normal.clone();
+                const nm = new THREE.Matrix3().getNormalMatrix(hits[0].object.matrixWorld);
+                normal.applyMatrix3(nm).normalize();
+                normal.y = 0;
+                if (normal.lengthSq() > 0.01) wallNormals.push(normal);
             }
         }
     }
-    return finalMove; // Return the adjusted "sliding" movement
+
+    // Apply all wall normals — each slides movement along that wall
+    for (let normal of wallNormals) {
+        const dot = finalMove.dot(normal);
+        if (dot < 0) {
+            finalMove.sub(normal.multiplyScalar(dot));
+            // Tiny push-back so player doesn't embed in surface
+            finalMove.addScaledVector(normal, PUSH_BACK);
+        }
+    }
+
+    finalMove.y = 0; // Never let horizontal movement affect vertical
+    return finalMove;
 }
 
 function getAnywhereSpawnPoint(centerPos, minRadius, maxRadius) {
@@ -1030,23 +1082,34 @@ function createPowerupGroup(type, pos) {
     }
     else if (type === 'armor_tee') {
         const useGrey = Math.random() > 0.5;
-        if (useGrey && lionTeeGreyTemplate) group.add(lionTeeGreyTemplate.clone());
-        else if (!useGrey && lionTeeTemplate) group.add(lionTeeTemplate.clone());
+        let mesh;
         
+        if (useGrey && lionTeeGreyTemplate) mesh = lionTeeGreyTemplate.clone();
+        else if (!useGrey && lionTeeTemplate) mesh = lionTeeTemplate.clone();
         else {
             // FALLBACK
-            const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.8,0.8,0.1), new THREE.MeshBasicMaterial({color: 0xFFD700}));
-            group.add(mesh);
+            mesh = new THREE.Mesh(new THREE.BoxGeometry(0.8,0.8,0.1), new THREE.MeshBasicMaterial({color: 0xFFD700}));
         }
+        
+        // Push the newly scaled model down slightly
+        mesh.position.y = -2.5; // <--- Changed from -3.5 to -1.5
+        
+        group.add(mesh);
         group.userData = { type: 'armor_tee', active: true };
     }
     else if (type === 'armor_belt') { 
-        if (beltTemplate) group.add(beltTemplate.clone());
+        let mesh;
+        
+        if (beltTemplate) mesh = beltTemplate.clone();
         else {
             // FALLBACK
-            const mesh = new THREE.Mesh(new THREE.TorusGeometry(0.3,0.05), new THREE.MeshBasicMaterial({color: 0x8B4513}));
-            group.add(mesh);
+            mesh = new THREE.Mesh(new THREE.TorusGeometry(0.3,0.05), new THREE.MeshBasicMaterial({color: 0x8B4513}));
         }
+        
+        // Push the belt down slightly
+        mesh.position.y = -1.0; // Tweak as needed
+        
+        group.add(mesh);
         group.userData = { type: 'armor_belt', active: true };
     }
     
@@ -1266,16 +1329,7 @@ function animate() {
                 isGrounded = false;
                 jumpLocked = true; 
                 
-                if (animationsMap.has('Jump')) {
-                    const jumpAction = animationsMap.get('Jump');
-                    jumpAction.reset().setLoop(THREE.LoopOnce).play();
-                    jumpAction.clampWhenFinished = true;
-                    jumpAction.timeScale = 1.3; 
-                    if (currentAction && currentAction !== jumpAction) {
-                        currentAction.fadeOut(0.2);
-                    }
-                    currentAction = jumpAction;
-                }
+            
             }
 
             // 3. MOVEMENT
@@ -1304,13 +1358,37 @@ function animate() {
                 // Add + Math.PI/2 (90 deg) or - Math.PI/2 (-90 deg) depending on the model
                 if (playerBikeMesh) playerBikeMesh.rotation.y = newRot + (Math.PI / 2);
                 
-                // HUMAN ANIMATION (Run)
-                if (!hasBike && isGrounded && currentAction !== animationsMap.get('Run')) {
-                    const run = animationsMap.get('Run');
-                    if (run) {
-                        run.reset().fadeIn(0.2).play();
-                        if (currentAction) currentAction.fadeOut(0.2);
-                        currentAction = run;
+                // HUMAN ANIMATION
+                if (!hasBike) {
+                    if (!isGrounded) {
+                        // Airborne — play Jump if not already, keep it frozen at last frame
+                        const jumpAnim = animationsMap.get('Jump');
+                        if (jumpAnim && currentAction !== jumpAnim) {
+                            jumpAnim.reset().setLoop(THREE.LoopOnce).play();
+                            jumpAnim.clampWhenFinished = true;
+                            if (currentAction) currentAction.fadeOut(0.15);
+                            currentAction = jumpAnim;
+                        }
+                    } else if (forward !== 0) {
+                        // Grounded + moving — Run
+                        const run = animationsMap.get('Run');
+                        if (run && currentAction !== run) {
+                            run.reset().fadeIn(0.2).play();
+                            if (currentAction) currentAction.fadeOut(0.2);
+                            currentAction = run;
+                        }
+                        if (currentAction === run) {
+                            currentAction.timeScale = (currentSpeed / BASE_SPEED) * 1.2;
+                        }
+                    } else {
+                        // Grounded + idle
+                        const idle = animationsMap.get('Idle');
+                        if (idle && currentAction !== idle) {
+                            idle.reset().fadeIn(0.2).play();
+                            if (currentAction) currentAction.fadeOut(0.2);
+                            currentAction = idle;
+                            currentAction.timeScale = 1.0;
+                        }
                     }
                 }
                 
@@ -1328,18 +1406,6 @@ function animate() {
             }                  
 
             } else {
-                // IDLE STATE
-                
-                // HUMAN ANIMATION (Idle)
-                if (!hasBike && isGrounded && currentAction !== animationsMap.get('Idle')) {
-                    const idle = animationsMap.get('Idle');
-                    if (idle) {
-                        idle.reset().fadeIn(0.2).play();
-                        if (currentAction) currentAction.fadeOut(0.2);
-                        currentAction = idle;
-                        currentAction.timeScale = 1.0;
-                    }
-                }
 
                 // BIKE ANIMATION: STOP ALL WHEN IDLE
                 if (hasBike && bikeActions.length > 0) {
@@ -1349,27 +1415,32 @@ function animate() {
             }
             }
 
-            // 4. PHYSICS (Gravity)
-            verticalVelocity += GRAVITY * delta; 
-            playerGroup.position.y += verticalVelocity * delta;
+                // 4. PHYSICS (Gravity) — runs every frame regardless of input
+                verticalVelocity += GRAVITY * delta;
+                playerGroup.position.y += verticalVelocity * delta;
 
-            raycaster.set(playerGroup.position.clone().add(new THREE.Vector3(0, 5, 0)), downVector);
-            const groundHits = raycaster.intersectObjects(colliderMeshes, false);
+                const groundOrigin = playerGroup.position.clone();
+                groundOrigin.y += 3.0;
+                raycaster.set(groundOrigin, downVector);
+                const groundHits = raycaster.intersectObjects(colliderMeshes, false);
 
-            if (groundHits.length > 0) {
-                const hitY = groundHits[0].point.y;
-                const distToFloor = playerGroup.position.y - hitY;
-
-                if (verticalVelocity <= 0 && distToFloor < 0.5) {
-                    playerGroup.position.y = hitY; 
-                    verticalVelocity = 0;
-                    isGrounded = true;
-                } 
-                else if (isGrounded && distToFloor < 1.5) {
-                    playerGroup.position.y = THREE.MathUtils.lerp(playerGroup.position.y, hitY, 15 * delta);
-                    verticalVelocity = 0; 
+                if (groundHits.length > 0) {
+                    const hitY = groundHits[0].point.y;
+                    const distToFloor = playerGroup.position.y - hitY;
+                    if (distToFloor <= 0.3 && verticalVelocity <= 0) {
+                        playerGroup.position.y = hitY;
+                        verticalVelocity = 0;
+                        isGrounded = true;
+                    } else if (distToFloor < -0.1) {
+                        playerGroup.position.y = hitY;
+                        verticalVelocity = 0;
+                        isGrounded = true;
+                    } else {
+                        isGrounded = false;
+                    }
+                } else {
+                    isGrounded = false;
                 }
-            }
             
             // 5. Fallback Check
             if (playerGroup.position.y < -50) {

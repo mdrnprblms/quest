@@ -241,6 +241,10 @@
         <button class="debug-btn" onclick="window.switchMap()">SWITCH MAP</button>
         <button class="debug-btn" onclick="window.debugSpawn('bike')">SPAWN BIKE</button>
         <button class="debug-btn" onclick="window.debugSpawn('drink')">SPAWN DRINK</button>
+        
+        <button class="debug-btn" onclick="window.debugSpawn('armor_tee')">SPAWN T-SHIRT</button>
+        <button class="debug-btn" onclick="window.debugSpawn('armor_belt')">SPAWN BELT</button>
+        
         <button class="debug-btn" onclick="window.spawnPolice()">SPAWN POLICE</button>
     </div>
 
@@ -248,7 +252,8 @@
         {
             "imports": {
                 "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+                "three-mesh-bvh": "https://unpkg.com/three-mesh-bvh@0.7.0/build/index.module.js"
             }
         }
     </script>

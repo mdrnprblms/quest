@@ -99,7 +99,7 @@ document.querySelectorAll('.map-card').forEach(card => {
 });
 
 // --- GAME LOOP ---
-const keys = { w: false, a: false, s: false, d: false, space: false, k: false };
+const keys = { w: false, a: false, s: false, d: false, space: false, k: false, punch: false, superJump: false };
 let cameraAngle = 0;
 const cameraRotationSpeed = 0.03;
 const currentLookAt = new THREE.Vector3(0, 0, 0);
@@ -107,6 +107,10 @@ const currentLookAt = new THREE.Vector3(0, 0, 0);
 // Define your maps array near the top of the file (with other configs) or right here
 const maps = ['shoreditch.glb', 'archway.glb', 'carnabyst.glb'];
 let currentMapIndex = 0; // Make sure this variable exists in your state variables
+
+let roamingNPCs = []; // civilian roamers
+const NPC_WALK_SPEED = 4.0;
+const MAX_ROAMING_NPCS = 8;
 
 window.switchMap = () => {
     gameActive = false; // Pause the game in the background
@@ -125,7 +129,7 @@ window.resetGame = () => {
     isBusted = false;
     isPaused = false;
     hasBike = false;
-    drinkTimer = 0;
+    hasJumpBoost = false;
     spawnTimer = 0;
 
     // 2. Reset Player Model Visibility
@@ -288,6 +292,8 @@ setTimeout(() => {
 
     // Map your buttons to keyboard keys here!
     bindActionButton('btn-x', 'space'); // X = Jump
+    bindActionButton('btn-circle', 'punch'); // Circle = Punch    
+    bindActionButton('btn-square', 'superJump'); // Square = Super Jump   
     // Add logic for others later:
     // bindActionButton('btn-square', 'e'); 
     // bindActionButton('btn-circle', 'shift'); 
@@ -311,9 +317,8 @@ const START_TIME = 90.0;
 const TIME_BONUS = 30.0;    
 const BASE_SPEED = 20.0; 
 const BIKE_MULTIPLIER = 1.8; 
-const DRINK_MULTIPLIER = 1.4; 
-const DRINK_DURATION = 15.0;
-const POWERUP_SPAWN_RATE = 5.0; // DRAMATICALLY INCREASED RATE (0.5s instead of 5.0s)
+const SUPER_JUMP_FORCE = 150.0;
+const POWERUP_SPAWN_RATE = 0.5; // DRAMATICALLY INCREASED RATE (0.5s instead of 5.0s)
 
 // MAP & AI CONFIG
 const MAP_LIMIT = 4000;            
@@ -336,7 +341,7 @@ let gameActive = false;
 let isPaused = false; 
 let isTimerRunning = true;
 let hasBike = false; 
-let drinkTimer = 0.0; 
+let hasJumpBoost = false;
 let isMapOpen = false; 
 let spawnTimer = 0; 
 let isBusted = false;
@@ -391,9 +396,9 @@ function updateUI() {
 
     if(uiScore) {
         let status = "WALKING";
-        if (hasBike && drinkTimer > 0) status = "STACKING IT"; 
+        if (hasBike && hasJumpBoost) status = "STACKING IT"; 
         else if (hasBike) status = "ON BIKE";
-        else if (drinkTimer > 0) status = "SUGAR RUSH";
+        else if (hasJumpBoost) status = "BOOST READY";
         
         let wantedStars = "";
         if (score >= WANTED_LEVEL_2_SCORE) wantedStars = "★★";
@@ -411,9 +416,9 @@ function updateUI() {
         if (hasBike) uiBike.style.display = 'block';
         else uiBike.style.display = 'none';
 
-        if (drinkTimer > 0) {
+        if (hasJumpBoost) {
             uiDrink.style.display = 'block';
-            uiDrinkTimer.innerText = drinkTimer.toFixed(1);
+            uiDrinkTimer.innerText = 'READY ■';
         } else {
             uiDrink.style.display = 'none';
         }
@@ -647,6 +652,9 @@ function loadLevel(mapName) {
     activeEnemies.forEach(e => { enemiesGroup.remove(e.groupRef); });
     activeEnemies = [];
 
+    roamingNPCs.forEach(n => scene.remove(n.mesh));
+    roamingNPCs = [];
+
     loader.load(mapName, (gltf) => {
         const map = gltf.scene;
         map.scale.set(3.5, 3.5, 3.5);
@@ -710,6 +718,9 @@ function loadLevel(mapName) {
         
         spawnBeacon();
         
+        // Spawn initial roaming NPCs
+        for (let i = 0; i < 5; i++) spawnRoamingNPC();
+
         // --- MASSIVE POWERUP SPAWN ---
         // Spawn 100 random items immediately across the map
         spawnPowerup();
@@ -756,7 +767,7 @@ loader.load('playermodel.glb', (gltf) => {
     const idleClip = THREE.AnimationClip.findByName(clips, 'Idle');
     const runClip = THREE.AnimationClip.findByName(clips, 'Run');
     const jumpClip = THREE.AnimationClip.findByName(clips, 'Jump');
-    
+
     if (idleClip) animationsMap.set('Idle', mixer.clipAction(idleClip));
     if (runClip) animationsMap.set('Run', mixer.clipAction(runClip));
     if (jumpClip) animationsMap.set('Jump', mixer.clipAction(jumpClip));
@@ -1080,7 +1091,7 @@ function createNewEnemy() {
     const runningClip = THREE.AnimationClip.findByName(policeClips, 'Running'); 
     const fastRunClip = THREE.AnimationClip.findByName(policeClips, 'Fast Run');
     const hookClip = THREE.AnimationClip.findByName(policeClips, 'Hook');
-     const walkClip = THREE.AnimationClip.findByName(policeClips, 'Walk');
+    const walkClip = THREE.AnimationClip.findByName(policeClips, 'Walk');
     
     if (idleClip) actions['Idle'] = mixer.clipAction(idleClip);
     
@@ -1118,6 +1129,46 @@ function createNewEnemy() {
         state: 'PATROL',  
         patrolTarget: null,
         patrolTimer: 0
+    });
+}
+
+function spawnRoamingNPC() {
+    if (!playerMesh || roamingNPCs.length >= MAX_ROAMING_NPCS) return;
+
+    const pos = getAnywhereSpawnPoint(playerGroup.position, 30, 150);
+    if (!pos) return;
+
+    // Clone the player model as placeholder
+    const mesh = SkeletonUtils.clone(playerMesh);
+    mesh.scale.set(2.0, 2.0, 2.0);
+    mesh.position.copy(pos);
+    // Give them a random tint so they're distinguishable
+    mesh.traverse(o => {
+        if (o.isMesh && o.material) {
+            o.material = o.material.clone();
+            o.material.color.setHSL(Math.random(), 0.4, 0.6);
+        }
+    });
+    scene.add(mesh);
+
+    // Give them their own mixer using the player's clips
+    const npcMixer = new THREE.AnimationMixer(mesh);
+    const idleClip = THREE.AnimationClip.findByName(mixer._root._clips || [], 'Idle');
+    
+    // Grab clips directly from animationsMap's underlying clips
+    const idleAction = npcMixer.clipAction(animationsMap.get('Idle')._clip);
+    const runAction  = npcMixer.clipAction(animationsMap.get('Run')._clip);
+    idleAction.play();
+
+    const target = getAnywhereSpawnPoint(pos, 20, 80) || pos.clone();
+
+    roamingNPCs.push({
+        mesh, mixer: npcMixer,
+        idleAction, runAction,
+        currentAction: idleAction,
+        target,
+        waitTimer: 0,
+        state: 'WALK'
     });
 }
 
@@ -1260,7 +1311,6 @@ function animate() {
 
     if (gameActive) {
         if (isTimerRunning) timeLeft -= delta;
-        if (drinkTimer > 0) drinkTimer -= delta;
         spawnTimer += delta;
         if (spawnTimer > POWERUP_SPAWN_RATE) {
             spawnPowerup();
@@ -1367,6 +1417,54 @@ function animate() {
         });
     }
 
+    // ROAMING NPCs
+    if (gameActive) {
+        roamingNPCs.forEach(npc => {
+            npc.mixer.update(delta);
+
+            if (npc.state === 'WAIT') {
+                npc.waitTimer -= delta;
+                if (npc.waitTimer <= 0) {
+                    const newTarget = getAnywhereSpawnPoint(npc.mesh.position, 20, 100);
+                    if (newTarget) npc.target = newTarget;
+                    npc.state = 'WALK';
+                    if (npc.currentAction !== npc.runAction) {
+                        npc.runAction.reset().fadeIn(0.2).play();
+                        if (npc.currentAction) npc.currentAction.fadeOut(0.2);
+                        npc.currentAction = npc.runAction;
+                    }
+                }
+                return;
+            }
+
+            const dist = npc.mesh.position.distanceTo(npc.target);
+            if (dist < 3.0) {
+                npc.state = 'WAIT';
+                npc.waitTimer = 2.0 + Math.random() * 3.0;
+                if (npc.currentAction !== npc.idleAction) {
+                    npc.idleAction.reset().fadeIn(0.2).play();
+                    if (npc.currentAction) npc.currentAction.fadeOut(0.2);
+                    npc.currentAction = npc.idleAction;
+                }
+            } else {
+                // Walk toward target
+                const dir = new THREE.Vector3().subVectors(npc.target, npc.mesh.position).normalize();
+                npc.mesh.position.addScaledVector(dir, NPC_WALK_SPEED * delta);
+                npc.mesh.lookAt(npc.target.x, npc.mesh.position.y, npc.target.z);
+
+                // Ground snap
+                raycaster.set(
+                    new THREE.Vector3(npc.mesh.position.x, npc.mesh.position.y + 10, npc.mesh.position.z),
+                    downVector
+                );
+                const hits = raycaster.intersectObjects(colliderMeshes, false);
+                if (hits.length > 0) {
+                    npc.mesh.position.y = THREE.MathUtils.lerp(npc.mesh.position.y, hits[0].point.y, 10 * delta);
+                }
+            }
+        });
+    }
+
     if (gameActive) {
         for (let i = powerups.length - 1; i >= 0; i--) {
             const p = powerups[i];
@@ -1379,7 +1477,7 @@ function animate() {
                 if (p.userData.type === 'bike') {
                     hasBike = true;
                 } else if (p.userData.type === 'drink') {
-                    drinkTimer = DRINK_DURATION;
+                    hasJumpBoost = true;
                 } else if (p.userData.type === 'armor_tee') {
                     armor += 2; 
                 } else if (p.userData.type === 'armor_belt') {
@@ -1412,16 +1510,48 @@ function animate() {
             if (keys.space && isGrounded && !jumpLocked) {
                 verticalVelocity = JUMP_FORCE;
                 isGrounded = false;
-                jumpLocked = true; 
-                
-            
+                jumpLocked = true;
+            }
+
+            // 2c. SUPER JUMP (square button, consumes stored boost)
+            if (keys.superJump && isGrounded && !jumpLocked && hasJumpBoost) {
+                verticalVelocity = SUPER_JUMP_FORCE;
+                isGrounded = false;
+                jumpLocked = true;
+                hasJumpBoost = false;
+            }
+
+            // 2b. PUNCH
+            if (keys.punch && !hasBike) {
+                const punchAnim = animationsMap.get('Punch');
+                if (punchAnim && currentAction !== punchAnim) {
+                    punchAnim.clampWhenFinished = true;
+                    punchAnim.reset().setLoop(THREE.LoopOnce).play();
+                    if (currentAction) currentAction.fadeOut(0.1);
+                    currentAction = punchAnim;
+
+                    // Check for NPCs in punch range (3 units in front of player)
+                    const punchDir = new THREE.Vector3(Math.sin(cameraAngle), 0, Math.cos(cameraAngle));
+                    for (let i = roamingNPCs.length - 1; i >= 0; i--) {
+                        const npc = roamingNPCs[i];
+                        const toNPC = new THREE.Vector3().subVectors(npc.mesh.position, playerGroup.position);
+                        const dist = toNPC.length();
+                        const dot = toNPC.normalize().dot(punchDir);
+                        if (dist < 4.0 && dot > 0.4) {
+                            // NPC is in front and close — destroy it
+                            scene.remove(npc.mesh);
+                            roamingNPCs.splice(i, 1);
+                            // Spawn a replacement somewhere else
+                            setTimeout(() => spawnRoamingNPC(), 3000);
+                        }
+                    }
+                }
             }
 
             // 3. MOVEMENT
             if (forward !== 0) {
                 let currentSpeed = BASE_SPEED;
                 if (hasBike) currentSpeed *= BIKE_MULTIPLIER;
-                if (drinkTimer > 0) currentSpeed *= DRINK_MULTIPLIER;
 
                 const dirX = Math.sin(cameraAngle);
                 const dirZ = Math.cos(cameraAngle);
@@ -1442,62 +1572,71 @@ function animate() {
 
                 // Add + Math.PI/2 (90 deg) or - Math.PI/2 (-90 deg) depending on the model
                 if (playerBikeMesh) playerBikeMesh.rotation.y = newRot + (Math.PI / 2);
-                
-                // HUMAN ANIMATION
+
+                // HUMAN ANIMATION: moving
                 if (!hasBike) {
-                    if (!isGrounded) {
-                        // Airborne — play Jump if not already, keep it frozen at last frame
-                        const jumpAnim = animationsMap.get('Jump');
-                        if (jumpAnim && currentAction !== jumpAnim) {
-                            jumpAnim.reset().setLoop(THREE.LoopOnce).play();
-                            jumpAnim.clampWhenFinished = true;
-                            if (currentAction) currentAction.fadeOut(0.15);
-                            currentAction = jumpAnim;
-                        }
-                    } else if (forward !== 0) {
-                        // Grounded + moving — Run
-                        const run = animationsMap.get('Run');
-                        if (run && currentAction !== run) {
-                            run.reset().fadeIn(0.2).play();
-                            if (currentAction) currentAction.fadeOut(0.2);
-                            currentAction = run;
-                        }
-                        if (currentAction === run) {
-                            currentAction.timeScale = (currentSpeed / BASE_SPEED) * 1.2;
-                        }
-                    } else {
-                        // Grounded + idle
-                        const idle = animationsMap.get('Idle');
-                        if (idle && currentAction !== idle) {
-                            idle.reset().fadeIn(0.2).play();
-                            if (currentAction) currentAction.fadeOut(0.2);
-                            currentAction = idle;
-                            currentAction.timeScale = 1.0;
+                    const punchAnim = animationsMap.get('Punch');
+                    const isPunching = punchAnim && currentAction === punchAnim && punchAnim.isRunning();
+                    if (!isPunching) {
+                        if (!isGrounded) {
+                            const jumpAnim = animationsMap.get('Jump');
+                            if (jumpAnim && currentAction !== jumpAnim) {
+                                jumpAnim.reset().setLoop(THREE.LoopOnce).play();
+                                jumpAnim.clampWhenFinished = true;
+                                if (currentAction) currentAction.fadeOut(0.15);
+                                currentAction = jumpAnim;
+                            }
+                        } else {
+                            const run = animationsMap.get('Run');
+                            if (run && currentAction !== run) {
+                                run.reset().fadeIn(0.2).play();
+                                if (currentAction) currentAction.fadeOut(0.2);
+                                currentAction = run;
+                            }
+                            if (currentAction === run) {
+                                currentAction.timeScale = (currentSpeed / BASE_SPEED) * 1.2;
+                            }
                         }
                     }
                 }
-                
-                // HUMAN ANIMATION SPEED
-                if (!hasBike && isGrounded && currentAction === animationsMap.get('Run')) {
-                    currentAction.timeScale = (currentSpeed / BASE_SPEED) * 1.2; 
+
+                // BIKE ANIMATION: moving
+                if (hasBike && bikeActions.length > 0) {
+                    bikeActions.forEach(action => { action.paused = false; action.play(); });
                 }
 
-                // BIKE ANIMATION: PLAY ALL WHEN MOVING
-                if (hasBike && bikeActions.length > 0) {
-                bikeActions.forEach(action => {
-                    action.paused = false; // Unpause
-                    action.play();         // Ensure it's active
-                 });
-            }                  
-
             } else {
+                // forward === 0
 
-                // BIKE ANIMATION: STOP ALL WHEN IDLE
+                // HUMAN ANIMATION: idle or airborne
+                if (!hasBike) {
+                    const punchAnim = animationsMap.get('Punch');
+                    const isPunching = punchAnim && currentAction === punchAnim && punchAnim.isRunning();
+                    if (!isPunching) {
+                        if (!isGrounded) {
+                            const jumpAnim = animationsMap.get('Jump');
+                            if (jumpAnim && currentAction !== jumpAnim) {
+                                jumpAnim.reset().setLoop(THREE.LoopOnce).play();
+                                jumpAnim.clampWhenFinished = true;
+                                if (currentAction) currentAction.fadeOut(0.15);
+                                currentAction = jumpAnim;
+                            }
+                        } else {
+                            const idle = animationsMap.get('Idle');
+                            if (idle && currentAction !== idle) {
+                                idle.reset().fadeIn(0.2).play();
+                                if (currentAction) currentAction.fadeOut(0.2);
+                                currentAction = idle;
+                                currentAction.timeScale = 1.0;
+                            }
+                        }
+                    }
+                }
+
+                // BIKE ANIMATION: idle
                 if (hasBike && bikeActions.length > 0) {
-                bikeActions.forEach(action => {
-                    action.paused = true; // Freeze exactly where it is
-                });
-            }
+                    bikeActions.forEach(action => { action.paused = true; });
+                }
             }
 
                 // 4. PHYSICS (Gravity)

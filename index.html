@@ -168,7 +168,7 @@
         /* --- CONTROLLER OVERLAY --- */
         #controller-overlay {
             position: fixed;
-            bottom: 20px; 
+            bottom: -1px; 
             left: 50%;
             transform: translateX(-50%);
             width: 95vw;         
@@ -320,6 +320,9 @@
     
     <div id="pause-screen">
         <div style="margin-bottom: 30px;">PAUSED</div>
+
+        <button class="debug-btn" onclick="document.getElementById('btn-pause').click()">RESUME GAME</button>
+        
         <button class="debug-btn" onclick="window.switchMap()">SWITCH MAP</button>
         <button class="debug-btn" onclick="window.debugSpawn('bike')">SPAWN BIKE</button>
         <button class="debug-btn" onclick="window.debugSpawn('drink')">SPAWN DRINK</button>

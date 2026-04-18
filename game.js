@@ -226,52 +226,60 @@ setTimeout(() => {
         });
     }
 
-    // --- CUSTOM ACTION BUTTONS ---
+    // --- CUSTOM ACTION BUTTONS (Touch & Mouse) ---
     function bindActionButton(buttonId, mappedKey) {
         const btn = document.getElementById(buttonId);
         if (!btn) return;
 
-        btn.addEventListener('touchstart', (e) => {
-            e.preventDefault(); 
-            // 1. Hide the button (revealing the baked "depressed" background)
+        const pressBtn = (e) => {
+            if (e.cancelable) e.preventDefault(); // Stop double-firing on some touch-laptops
             btn.style.opacity = '0'; 
-            
-            // 2. Trigger the game action
             keys[mappedKey] = true;
-            
-            // 3. HAPTIC FEEDBACK (Vibrates for 15ms if the device supports it)
             if (navigator.vibrate) navigator.vibrate(15); 
-        }, { passive: false });
+        };
 
-        btn.addEventListener('touchend', (e) => {
-            e.preventDefault();
-            // 1. Show the button again
+        const releaseBtn = (e) => {
+            if (e.cancelable) e.preventDefault();
             btn.style.opacity = '1'; 
-            
-            // 2. Stop the game action
             keys[mappedKey] = false;
             if (mappedKey === 'space') jumpLocked = false; 
-        }, { passive: false });
+        };
+
+        // Mobile Listeners
+        btn.addEventListener('touchstart', pressBtn, { passive: false });
+        btn.addEventListener('touchend', releaseBtn, { passive: false });
+        
+        // Desktop Listeners
+        btn.addEventListener('mousedown', pressBtn);
+        btn.addEventListener('mouseup', releaseBtn);
+        btn.addEventListener('mouseleave', releaseBtn); // Catch if mouse dragged off button
     }
 
-    // --- CUSTOM MENU BUTTONS ---
+    // --- CUSTOM MENU BUTTONS (Touch & Mouse) ---
     function bindMenuButton(buttonId, targetElementId) {
         const btn = document.getElementById(buttonId);
         if (!btn) return;
 
-        btn.addEventListener('touchstart', (e) => {
-            e.preventDefault(); 
-            btn.style.opacity = '0'; // Hide to show pressed background
+        const pressBtn = (e) => {
+            if (e.cancelable) e.preventDefault(); 
+            btn.style.opacity = '0'; 
             if (navigator.vibrate) navigator.vibrate(20); 
-            
-            // "Click" the existing HUD buttons invisibly
             document.getElementById(targetElementId).click(); 
-        }, { passive: false });
+        };
 
-        btn.addEventListener('touchend', (e) => {
-            e.preventDefault();
-            btn.style.opacity = '1'; // Pop back up
-        }, { passive: false });
+        const releaseBtn = (e) => {
+            if (e.cancelable) e.preventDefault();
+            btn.style.opacity = '1'; 
+        };
+
+        // Mobile Listeners
+        btn.addEventListener('touchstart', pressBtn, { passive: false });
+        btn.addEventListener('touchend', releaseBtn, { passive: false });
+        
+        // Desktop Listeners
+        btn.addEventListener('mousedown', pressBtn);
+        btn.addEventListener('mouseup', releaseBtn);
+        btn.addEventListener('mouseleave', releaseBtn);
     }
 
     // Bind Select to Map, and Start to Pause

@@ -169,16 +169,30 @@ window.resetGame = () => {
 let joystickInput = { x: 0, y: 0 };
 let joystickManager;
 
-setTimeout(() => {
+// Wrap the joystick logic in a reusable function
+function initJoystick() {
     const zone = document.getElementById('zone_joystick');
     if (typeof nipplejs !== 'undefined' && zone) {
+        
+        // 1. Destroy the old joystick if we are resizing the window
+        if (joystickManager) {
+            joystickManager.destroy();
+        }
+
+        // 2. Measure the new, correctly scaled size of the CSS container
+        const dynamicSize = zone.getBoundingClientRect().width;
+
+        // 3. Rebuild the joystick with the fresh dimensions
         joystickManager = nipplejs.create({
             zone: zone,
             mode: 'static',
             position: { left: '50%', top: '50%' },
-            color: 'white',
-            size: 100
+            color: 'transparent', 
+            size: dynamicSize, 
+            restOpacity: 1, 
+            catchOpacity: 1
         });
+        
         joystickManager.on('move', function (evt, data) {
             if (data.vector) {
                 joystickInput.y = data.vector.y; 
@@ -190,6 +204,11 @@ setTimeout(() => {
             joystickInput.y = 0;
         });
     }
+}
+
+// Call the function when the game first loads
+setTimeout(() => {
+    initJoystick();
 
     const btnPause = document.getElementById('btn-pause');
     if (btnPause) {
@@ -207,19 +226,77 @@ setTimeout(() => {
         });
     }
 
-    const jumpBtn = document.getElementById('mobile-jump');
-    if (jumpBtn) {
-        jumpBtn.addEventListener('touchstart', (e) => {
+    // --- CUSTOM ACTION BUTTONS ---
+    function bindActionButton(buttonId, mappedKey) {
+        const btn = document.getElementById(buttonId);
+        if (!btn) return;
+
+        btn.addEventListener('touchstart', (e) => {
             e.preventDefault(); 
-            keys.space = true;
+            // 1. Hide the button (revealing the baked "depressed" background)
+            btn.style.opacity = '0'; 
+            
+            // 2. Trigger the game action
+            keys[mappedKey] = true;
+            
+            // 3. HAPTIC FEEDBACK (Vibrates for 15ms if the device supports it)
+            if (navigator.vibrate) navigator.vibrate(15); 
         }, { passive: false });
-        jumpBtn.addEventListener('touchend', (e) => {
+
+        btn.addEventListener('touchend', (e) => {
             e.preventDefault();
-            keys.space = false;
-            jumpLocked = false; 
+            // 1. Show the button again
+            btn.style.opacity = '1'; 
+            
+            // 2. Stop the game action
+            keys[mappedKey] = false;
+            if (mappedKey === 'space') jumpLocked = false; 
         }, { passive: false });
     }
+
+    // --- CUSTOM MENU BUTTONS ---
+    function bindMenuButton(buttonId, targetElementId) {
+        const btn = document.getElementById(buttonId);
+        if (!btn) return;
+
+        btn.addEventListener('touchstart', (e) => {
+            e.preventDefault(); 
+            btn.style.opacity = '0'; // Hide to show pressed background
+            if (navigator.vibrate) navigator.vibrate(20); 
+            
+            // "Click" the existing HUD buttons invisibly
+            document.getElementById(targetElementId).click(); 
+        }, { passive: false });
+
+        btn.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            btn.style.opacity = '1'; // Pop back up
+        }, { passive: false });
+    }
+
+    // Bind Select to Map, and Start to Pause
+    bindMenuButton('btn-triangle', 'btn-map');
+    bindMenuButton('btn-start', 'btn-pause');
+
+    // Map your buttons to keyboard keys here!
+    bindActionButton('btn-x', 'space'); // X = Jump
+    // Add logic for others later:
+    // bindActionButton('btn-square', 'e'); 
+    // bindActionButton('btn-circle', 'shift'); 
+    // bindActionButton('btn-triangle', 'f');
 }, 500);
+
+// --- KILL MOBILE DOUBLE-TAP ZOOM ---
+    document.addEventListener('dblclick', function(event) {
+        event.preventDefault();
+    }, { passive: false });
+    
+    // Also block multi-touch pinch zooming just in case
+    document.addEventListener('touchmove', function(event) {
+        if (event.scale !== 1) {
+            event.preventDefault();
+        }
+    }, { passive: false });
 
 // --- 1. CONFIGURATION ---
 const START_TIME = 90.0;    
@@ -1417,19 +1494,23 @@ function animate() {
 
                 // 4. PHYSICS (Gravity)
                 verticalVelocity += GRAVITY * delta;
-                playerGroup.position.y += verticalVelocity * delta;
 
-                // Ceiling check — must run BEFORE ground check, while velocity is still upward
+                // Ceiling check BEFORE position update — ray looks ahead by movement distance
                 if (verticalVelocity > 0) {
+                    const moveAmount = verticalVelocity * delta;
                     const ceilOrigin = playerGroup.position.clone();
                     ceilOrigin.y += 0.1;
                     raycaster.set(ceilOrigin, new THREE.Vector3(0, 1, 0));
                     const ceilHits = raycaster.intersectObjects(colliderMeshes, false);
-                    if (ceilHits.length > 0 && ceilHits[0].distance < 2.5) {
-                        // Push player down so head clears the surface, kill upward velocity
-                        playerGroup.position.y = ceilHits[0].point.y - 1;
+                    if (ceilHits.length > 0 && ceilHits[0].distance < moveAmount + 2.0) {
+                        // Surface is within reach this frame — stop just below it
+                        playerGroup.position.y = ceilHits[0].point.y - 2.5;
                         verticalVelocity = 0;
+                    } else {
+                        playerGroup.position.y += moveAmount;
                     }
+                } else {
+                    playerGroup.position.y += verticalVelocity * delta;
                 }
 
                 // Ground check
@@ -1532,9 +1613,14 @@ window.addEventListener('resize', () => {
     camera.updateProjectionMatrix();
     
     renderer.setSize(window.innerWidth, window.innerHeight);
-    composer.setSize(window.innerWidth, window.innerHeight); // <--- IMPORTANT ADDITION
+    composer.setSize(window.innerWidth, window.innerHeight); 
     
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+    // --- NEW: REBUILD JOYSTICK ON RESIZE ---
+    if (typeof initJoystick === 'function') {
+        initJoystick();
+    }
 });
 
 window.spawnPolice = () => {

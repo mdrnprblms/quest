@@ -165,15 +165,85 @@
 
         /* --- MOBILE CONTROLS --- */
         
-        /* Joystick Zone (LEFT SIDE) */
+        /* --- CONTROLLER OVERLAY --- */
+        #controller-overlay {
+            position: fixed;
+            bottom: 20px; 
+            left: 50%;
+            transform: translateX(-50%);
+            width: 95vw;         
+            max-width: 700px;    /* Tweak this if you want it bigger/smaller on PC */
+            
+            /* EXACT Aspect Ratio from your Photoshop file! */
+            aspect-ratio: 10677 / 7476; 
+            
+            background: url('basecontroller.png') center / contain no-repeat;
+            z-index: 100;
+            pointer-events: none; 
+        }
+
+        /* --- JOYSTICK ZONE --- */
         #zone_joystick {
             position: absolute;
-            bottom: 40px;
-            left: 40px;     
-            width: 150px;
-            height: 150px;
-            z-index: 150;
+            /* Top-Left coordinates of the Joystick Base */
+            top: 14.95%;  /* 1193 / 7476 */
+            left: 9.25%;  /* 988 / 10677 */
+            
+            /* Tweak this width until the NippleJS base matches your background base */
+            width: 22%; 
+            aspect-ratio: 1 / 1; /* Keeps the touch zone perfectly square */
+            pointer-events: auto; 
         }
+        
+        .nipple .back {
+            background: url('joystick_base.png') center/contain no-repeat !important;
+            background-color: transparent !important;
+            border: none !important;
+            opacity: 1 !important; 
+        }
+        .nipple .front {
+            background: url('joystick_knob.png') center/contain no-repeat !important;
+            background-color: transparent !important;
+            border: none !important;
+            opacity: 1 !important;
+        }
+
+        /* --- ACTION BUTTONS ZONE --- */
+        #action-pad {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            pointer-events: none; 
+        }
+
+        .action-btn {
+            position: absolute;
+            /* Tweak this ONE width to scale all 4 buttons up or down simultaneously */
+            width: 8%; 
+            height: auto;
+            pointer-events: auto; 
+            transition: opacity 0.05s ease; 
+            /* NOTICE: We removed the translate(-50%, -50%) here! */
+        }
+
+        /* --- EXACT PHOTOSHOP PERCENTAGES --- */
+        #btn-triangle { top: 13.41%; left: 74.20%; }
+        #btn-square   { top: 24.37%; left: 65.77%; }
+        #btn-circle   { top: 23.71%; left: 83.44%; }
+        #btn-x        { top: 34.48%; left: 74.73%; }
+
+        /* --- MENU BUTTONS --- */
+        .menu-btn {
+            position: absolute;
+            /* Tweak this width until they fit perfectly in the slots */
+            width: 5%; 
+            height: auto;
+            pointer-events: auto; 
+            transition: opacity 0.05s ease; 
+        }
+
+        #btn-select { top: 37.28%; left: 40.54%; }
+        #btn-start  { top: 36.66%; left: 52.87%; }
 
         /* Jump Button (RIGHT SIDE) */
         #mobile-jump {
@@ -233,8 +303,20 @@
     
     <div id="zone-warning">⚠️ LEAVING SAFE ZONE ⚠️</div>
 
-    <div id="zone_joystick"></div>
-    <div id="mobile-jump">JUMP</div>
+    <div id="controller-overlay">
+        
+        <div id="zone_joystick"></div>
+
+        <div id="action-pad">
+            <img src="triangleBTN.png" id="btn-triangle" class="action-btn">
+            <img src="squareBTN.png" id="btn-square" class="action-btn">
+            <img src="circleBTN.png" id="btn-circle" class="action-btn">
+            <img src="xBTN.png" id="btn-x" class="action-btn">
+            
+            <img src="selectBTN.png" id="btn-select" class="menu-btn">
+            <img src="startBTN.png" id="btn-start" class="menu-btn">
+        </div>
+    </div>
     
     <div id="pause-screen">
         <div style="margin-bottom: 30px;">PAUSED</div>

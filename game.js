@@ -305,11 +305,11 @@ setTimeout(() => {
         event.preventDefault();
     }, { passive: false });
     
-    // Also block multi-touch pinch zooming just in case
+    // --- KILL PULL-TO-REFRESH & SWIPE NAVIGATION ---
     document.addEventListener('touchmove', function(event) {
-        if (event.scale !== 1) {
-            event.preventDefault();
-        }
+        // This brutally overrides iOS Safari and completely disables 
+        // pull-to-refresh, page bouncing, and pinch-zooming globally.
+        event.preventDefault();
     }, { passive: false });
 
 // --- 1. CONFIGURATION ---

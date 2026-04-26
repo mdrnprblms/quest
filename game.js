@@ -21,6 +21,12 @@ import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
+// --- iOS DETECTION + ADAPTIVE QUALITY ---
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+              (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const targetPixelRatio = () => isIOS
+    ? Math.min(window.devicePixelRatio, 1.25)
+    : Math.min(window.devicePixelRatio, 2);
 
 // --- LOADING SCREEN SETUP ---
 const loadingScreen = document.createElement('div');
@@ -508,9 +514,9 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 3000);
 camera.position.set(0, 20, 20); 
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: !isIOS, powerPreference: 'high-performance' });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(targetPixelRatio());
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
 renderer.useLegacyLights = false; 
@@ -518,22 +524,23 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 document.body.appendChild(renderer.domElement);
 
-// --- POST-PROCESSING SETUP (BOKEH) ---
-const composer = new EffectComposer(renderer);
-const renderPass = new RenderPass(scene, camera);
-composer.addPass(renderPass);
+// --- POST-PROCESSING SETUP (BOKEH) — skipped on iOS to save memory ---
+let composer = null;
+let bokehPass = null;
+if (!isIOS) {
+    composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
 
-const bokehPass = new BokehPass(scene, camera, {
-    focus: 10.0,       // Distance to focus on (will update dynamically)
-    aperture: 0.00002,  // Blur strength (0.0001 is subtle, 0.0002 is strong)
-    maxblur: 0.01,     // Max blur level
-    width: window.innerWidth,
-    height: window.innerHeight
-});
-composer.addPass(bokehPass);
-
-const outputPass = new OutputPass();
-composer.addPass(outputPass);
+    bokehPass = new BokehPass(scene, camera, {
+        focus: 10.0,
+        aperture: 0.00002,
+        maxblur: 0.01,
+        width: window.innerWidth,
+        height: window.innerHeight
+    });
+    composer.addPass(bokehPass);
+    composer.addPass(new OutputPass());
+}
 
 // --- DRACO LOADER SETUP (For your compressed Archway map) ---
 const dracoLoader = new DRACOLoader();
@@ -550,8 +557,8 @@ scene.add(ambientLight);
 const dirLight = new THREE.DirectionalLight(0xaaccff, 1.2); 
 dirLight.position.set(50, 200, 50); 
 dirLight.castShadow = true;
-dirLight.shadow.mapSize.width = 1024; 
-dirLight.shadow.mapSize.height = 1024;
+dirLight.shadow.mapSize.width = isIOS ? 512 : 1024;
+dirLight.shadow.mapSize.height = isIOS ? 512 : 1024;
 dirLight.shadow.bias = -0.0005;
 dirLight.shadow.camera.left = -300;
 dirLight.shadow.camera.right = 300;
@@ -676,7 +683,24 @@ function loadLevel(mapName) {
     console.log("Loading Map:", mapName);
     document.getElementById('loading-screen').style.display = 'flex';
     
-    while(cityGroup.children.length > 0){ cityGroup.remove(cityGroup.children[0]); }
+    // Dispose old map's GPU resources before removing — iOS will crash without this
+    cityGroup.traverse(o => {
+        if (o.isMesh) {
+            if (o.geometry) {
+                if (o.geometry.disposeBoundsTree) o.geometry.disposeBoundsTree();
+                o.geometry.dispose();
+            }
+            if (o.material) {
+                const mats = Array.isArray(o.material) ? o.material : [o.material];
+                mats.forEach(m => {
+                    for (const k in m) if (m[k] && m[k].isTexture) m[k].dispose();
+                    m.dispose();
+                });
+            }
+        }
+    });
+    while (cityGroup.children.length > 0) cityGroup.remove(cityGroup.children[0]);
+    renderer.renderLists.dispose();
     colliderMeshes = [];
     roadMeshes = [];
     groundMeshes = [];
@@ -2098,8 +2122,9 @@ function animate() {
         playerBikeMesh.visible = hasBike;
     }
     
-    // RENDER WITH COMPOSER (Instead of renderer)
-    composer.render();
+    // RENDER — composer on desktop, plain render on iOS
+    if (composer) composer.render();
+    else renderer.render(scene, camera);
 }
 
 // CAMERA
@@ -2130,11 +2155,11 @@ function animate() {
              scene.fog.near = THREE.MathUtils.lerp(scene.fog.near, targetFogNear, 0.05);
     scene.fog.far = THREE.MathUtils.lerp(scene.fog.far, targetFogFar, 0.05);
 
-    // UPDATE BOKEH FOCUS (Keep player sharp)
-    if (playerGroup) {
-         const distToCam = camera.position.distanceTo(playerGroup.position);
-         bokehPass.uniforms['focus'].value = distToCam;
-      }
+    // UPDATE BOKEH FOCUS (Keep player sharp) — skipped on iOS
+    if (playerGroup && bokehPass) {
+        const distToCam = camera.position.distanceTo(playerGroup.position);
+        bokehPass.uniforms['focus'].value = distToCam;
+    }
  }
 
 animate();
@@ -2144,9 +2169,9 @@ window.addEventListener('resize', () => {
     camera.updateProjectionMatrix();
     
     renderer.setSize(window.innerWidth, window.innerHeight);
-    composer.setSize(window.innerWidth, window.innerHeight); 
+    if (composer) composer.setSize(window.innerWidth, window.innerHeight);
     
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(targetPixelRatio());
     navLineMat.resolution.set(window.innerWidth, window.innerHeight);
 
     // --- NEW: REBUILD JOYSTICK ON RESIZE ---

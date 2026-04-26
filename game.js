@@ -12,6 +12,11 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 // --- PHYSICS ACCELERATION ---
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 
+// --- WIDE LINE (nav route) ---
+import { Line2 }        from 'three/addons/lines/Line2.js';
+import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+
 // Silently upgrade Three.js with BVH acceleration
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
@@ -313,7 +318,7 @@ setTimeout(() => {
     }, { passive: false });
 
 // --- 1. CONFIGURATION ---
-const START_TIME = 90.0;    
+const START_TIME = 180.0;
 const TIME_BONUS = 30.0;    
 const BASE_SPEED = 20.0; 
 const BIKE_MULTIPLIER = 1.8; 
@@ -350,15 +355,28 @@ let isBusted = false;
 let verticalVelocity = 0;
 let isGrounded = true;
 let jumpLocked = false;
+let wallJumpsRemaining = 1;
 const GRAVITY = -60.0;      
 const JUMP_FORCE = 30.0;    
 
 // DATA STORE
-let validRoadPositions = []; 
-let colliderMeshes = []; 
+let validRoadPositions = [];
+let colliderMeshes = [];
 let roadMeshes = []; // NEW: Stores DATA_ROADS
-let powerups = []; 
+let powerups = [];
 let groundMeshes = []; // Only flat/road geometry — used for ground snapping
+
+// NAV GRID (road-following pathfinding)
+const NAV_CELL = 20;        // world-units per grid cell
+const NAV_HALF = 4000;      // map extends ±4000 (matches MAP_LIMIT)
+const NAV_DIM = Math.ceil((NAV_HALF * 2) / NAV_CELL); // 400 cells per axis
+let navGrid = null;         // Uint8Array[NAV_DIM*NAV_DIM], 1=road 0=blocked
+let navHeightGrid = null;   // Float32Array[NAV_DIM*NAV_DIM], road surface Y per cell
+let currentNavPath = [];    // THREE.Vector3[] waypoints along road
+let currentNavIndex = 0;
+let pathRetryTimer = 0;
+let navLineGroundTimer = 0;
+let navLineUpdateTimer = 0.12; // start at threshold so first frame draws immediately
 
 // Templates
 let bikeTemplate = null; 
@@ -633,9 +651,25 @@ const arrowMesh = new THREE.Mesh(
     new THREE.ConeGeometry(0.5, 1.5, 8),
     new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.8 }) 
 );
-arrowMesh.geometry.rotateX(Math.PI / 2); 
-arrowMesh.position.y = 6; 
+arrowMesh.geometry.rotateX(Math.PI / 2);
+arrowMesh.position.y = 6;
 playerGroup.add(arrowMesh);
+
+// Yellow dashed route line — Line2 so linewidth actually works in WebGL
+const navLineMat = new LineMaterial({
+    color: 0xffff00,
+    linewidth: 5,
+    dashed: true,
+    dashSize: 10,
+    gapSize: 6,
+    dashScale: 1,
+    resolution: new THREE.Vector2(window.innerWidth, window.innerHeight)
+});
+const navLineGeo = new LineGeometry();
+const navLine = new Line2(navLineGeo, navLineMat);
+navLine.frustumCulled = false;
+navLine.visible = false;
+scene.add(navLine);
 
 // --- MAP LOADER FUNCTION ---
 function loadLevel(mapName) {
@@ -645,8 +679,13 @@ function loadLevel(mapName) {
     while(cityGroup.children.length > 0){ cityGroup.remove(cityGroup.children[0]); }
     colliderMeshes = [];
     roadMeshes = [];
-    groundMeshes = []; // ADD THIS
+    groundMeshes = [];
     validRoadPositions = [];
+    navGrid = null;
+    navHeightGrid = null;
+    currentNavPath = [];
+    currentNavIndex = 0;
+    pathRetryTimer = 0;
     powerups.forEach(p => scene.remove(p));
     powerups = [];
     activeEnemies.forEach(e => { enemiesGroup.remove(e.groupRef); });
@@ -668,9 +707,9 @@ function loadLevel(mapName) {
         map.traverse((child) => {
             if (child.isMesh) {
                 // 1. DATA ROADS (New Logic)
-                if (child.name.includes("DATA_ROADS")) {
-                    // It is a road mesh. We keep it for raycasting but hide it.
-                    child.visible = false; 
+                if (child.name.toUpperCase().includes("DATA_ROAD")) {
+                    child.visible = false;
+                    if (child.geometry) child.geometry.computeBoundsTree();
                     roadMeshes.push(child);
                 }
                 else if (child.name.includes("Border") || child.name.includes("border")) {
@@ -716,15 +755,16 @@ function loadLevel(mapName) {
             playerGroup.position.set(0, 20, 0); 
         }
         
+        buildNavGrid();
         spawnBeacon();
-        
+
         // Spawn initial roaming NPCs
         for (let i = 0; i < 5; i++) spawnRoamingNPC();
 
         // --- MASSIVE POWERUP SPAWN ---
         // Spawn 100 random items immediately across the map
         spawnPowerup();
-        
+
         document.getElementById('loading-screen').style.display = 'none';
 
     }, undefined, (err) => {
@@ -995,19 +1035,211 @@ function getAnywhereSpawnPoint(centerPos, minRadius, maxRadius) {
 }
 
 function spawnBeacon() {
-    // OLD: let pos = getAnywhereSpawnPoint(playerGroup.position, 50, 300);
-    
-    // NEW: Spawns between 400 and 1500 units away from the player
-    let pos = getAnywhereSpawnPoint(playerGroup.position, 400, 1500);
-    
+    // Retry until we land at true road level (Y < 6 after the +2 offset added by
+    // getAnywhereSpawnPoint), ruling out rooftops and elevated areas.
+    let pos = null;
+    for (let attempt = 0; attempt < 40; attempt++) {
+        const candidate = getAnywhereSpawnPoint(playerGroup.position, 400, 1500);
+        if (candidate && candidate.y < 6) { pos = candidate; break; }
+    }
+
     if (pos) {
-    beaconGroup.position.copy(pos);
-    beaconGroup.position.y -= 2.0; // <--- Drop it exactly 2 units to the floor
-} else {
-        // Fallback: If no valid spot found, put it 100 units away instead of 20
+        beaconGroup.position.copy(pos);
+        beaconGroup.position.y -= 2.0;
+    } else {
         beaconGroup.position.set(playerGroup.position.x + 100, 0, playerGroup.position.z);
     }
+
+    currentNavPath = findRoadPath(playerGroup.position, beaconGroup.position) || [];
+    currentNavIndex = 0;
+
     updateWantedSystem();
+}
+
+// --- ROAD-FOLLOWING NAVIGATION ---
+
+function buildNavGrid() {
+    // Prefer dedicated road meshes; fall back to ground-level colliders so
+    // navigation works even on maps that lack DATA_ROAD geometry.
+    const useRoadMeshes = roadMeshes.length > 0;
+    const meshesToScan  = useRoadMeshes ? roadMeshes : colliderMeshes;
+    if (meshesToScan.length === 0) return;
+
+    // Tighter Y band when using colliders so building rooftops aren't treated as roads.
+    const minY = useRoadMeshes ? -10 : -2;
+    const maxY = useRoadMeshes ?  10 :  5;
+
+    const grid    = new Uint8Array(NAV_DIM * NAV_DIM);
+    const heights = new Float32Array(NAV_DIM * NAV_DIM);
+    const down    = new THREE.Vector3(0, -1, 0);
+    const rc      = new THREE.Raycaster();
+    rc.firstHitOnly = true;
+
+    for (let gz = 0; gz < NAV_DIM; gz++) {
+        for (let gx = 0; gx < NAV_DIM; gx++) {
+            const wx = -NAV_HALF + gx * NAV_CELL + NAV_CELL * 0.5;
+            const wz = -NAV_HALF + gz * NAV_CELL + NAV_CELL * 0.5;
+            rc.set(new THREE.Vector3(wx, 500, wz), down);
+            const hits = rc.intersectObjects(meshesToScan, false);
+            if (hits.length > 0 && hits[0].point.y > minY && hits[0].point.y < maxY) {
+                grid[gz * NAV_DIM + gx] = 1;
+                heights[gz * NAV_DIM + gx] = hits[0].point.y;
+            }
+        }
+    }
+    navGrid = grid;
+    navHeightGrid = heights;
+    const roadCells = grid.reduce((s, v) => s + v, 0);
+    console.log(`Nav grid built: ${NAV_DIM}x${NAV_DIM}, road cells: ${roadCells} (source: ${useRoadMeshes ? 'DATA_ROAD meshes' : 'collider fallback'})`);
+}
+
+function worldToCell(wx, wz) {
+    return {
+        gx: Math.max(0, Math.min(NAV_DIM - 1, Math.floor((wx + NAV_HALF) / NAV_CELL))),
+        gz: Math.max(0, Math.min(NAV_DIM - 1, Math.floor((wz + NAV_HALF) / NAV_CELL)))
+    };
+}
+
+// Snap a non-road cell to the nearest road cell within `radius` cells
+function nearestRoadCell(gx, gz, radius = 10) {
+    if (navGrid[gz * NAV_DIM + gx] === 1) return { gx, gz };
+    for (let r = 1; r <= radius; r++) {
+        for (let dz = -r; dz <= r; dz++) {
+            for (let dx = -r; dx <= r; dx++) {
+                if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
+                const nx = gx + dx, nz = gz + dz;
+                if (nx < 0 || nx >= NAV_DIM || nz < 0 || nz >= NAV_DIM) continue;
+                if (navGrid[nz * NAV_DIM + nx] === 1) return { gx: nx, gz: nz };
+            }
+        }
+    }
+    return null;
+}
+
+function findRoadPath(startPos, endPos) {
+    if (!navGrid) return null;
+
+    const s = worldToCell(startPos.x, startPos.z);
+    const e = worldToCell(endPos.x, endPos.z);
+    const startCell = nearestRoadCell(s.gx, s.gz) || s;
+    const endCell   = nearestRoadCell(e.gx, e.gz) || e;
+
+    if (startCell.gx === endCell.gx && startCell.gz === endCell.gz) return [];
+
+    const idx = (gx, gz) => gz * NAV_DIM + gx;
+    const heur = (gx, gz) => Math.abs(gx - endCell.gx) + Math.abs(gz - endCell.gz);
+
+    const gScore   = new Float32Array(NAV_DIM * NAV_DIM).fill(Infinity);
+    const cameFrom = new Int32Array(NAV_DIM * NAV_DIM).fill(-1);
+    const inOpen   = new Uint8Array(NAV_DIM * NAV_DIM);
+
+    gScore[idx(startCell.gx, startCell.gz)] = 0;
+
+    // Min-heap keyed on f = g + h
+    const heap = [];
+    const heapPush = (item) => {
+        heap.push(item);
+        let i = heap.length - 1;
+        while (i > 0) {
+            const p = (i - 1) >> 1;
+            if (heap[p].f <= heap[i].f) break;
+            [heap[p], heap[i]] = [heap[i], heap[p]];
+            i = p;
+        }
+    };
+    const heapPop = () => {
+        const top = heap[0];
+        const last = heap.pop();
+        if (heap.length > 0) {
+            heap[0] = last;
+            let i = 0;
+            while (true) {
+                let m = i, l = 2*i+1, r = 2*i+2;
+                if (l < heap.length && heap[l].f < heap[m].f) m = l;
+                if (r < heap.length && heap[r].f < heap[m].f) m = r;
+                if (m === i) break;
+                [heap[m], heap[i]] = [heap[i], heap[m]];
+                i = m;
+            }
+        }
+        return top;
+    };
+
+    heapPush({ gx: startCell.gx, gz: startCell.gz, f: heur(startCell.gx, startCell.gz) });
+    inOpen[idx(startCell.gx, startCell.gz)] = 1;
+
+    const dirs = [[1,0,1],[-1,0,1],[0,1,1],[0,-1,1],[1,1,1.414],[1,-1,1.414],[-1,1,1.414],[-1,-1,1.414]];
+
+    while (heap.length > 0) {
+        const cur = heapPop();
+        const curIdx = idx(cur.gx, cur.gz);
+
+        if (cur.gx === endCell.gx && cur.gz === endCell.gz) {
+            const path = [];
+            let c = curIdx;
+            const startIdx = idx(startCell.gx, startCell.gz);
+            while (c !== startIdx && c !== -1) {
+                const gx = c % NAV_DIM;
+                const gz = Math.floor(c / NAV_DIM);
+                const wy = navHeightGrid ? navHeightGrid[c] : 0;
+                path.unshift(new THREE.Vector3(
+                    -NAV_HALF + gx * NAV_CELL + NAV_CELL * 0.5,
+                    wy,
+                    -NAV_HALF + gz * NAV_CELL + NAV_CELL * 0.5
+                ));
+                c = cameFrom[c];
+            }
+            path.push(endPos.clone());
+            return simplifyNavPath(path);
+        }
+
+        for (const [dx, dz, cost] of dirs) {
+            const nx = cur.gx + dx, nz = cur.gz + dz;
+            if (nx < 0 || nx >= NAV_DIM || nz < 0 || nz >= NAV_DIM) continue;
+            if (navGrid[idx(nx, nz)] === 0) continue;
+
+            const nIdx = idx(nx, nz);
+            const tentG = gScore[curIdx] + cost;
+            if (tentG < gScore[nIdx]) {
+                gScore[nIdx] = tentG;
+                cameFrom[nIdx] = curIdx;
+                if (!inOpen[nIdx]) {
+                    inOpen[nIdx] = 1;
+                    heapPush({ gx: nx, gz: nz, f: tentG + heur(nx, nz) });
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
+function simplifyNavPath(path) {
+    if (path.length <= 2) return path;
+    const out = [path[0]];
+    for (let i = 1; i < path.length - 1; i++) {
+        const prev = out[out.length - 1], cur = path[i], next = path[i + 1];
+        const cross = (cur.x - prev.x) * (next.z - cur.z) - (cur.z - prev.z) * (next.x - cur.x);
+        if (Math.abs(cross) > 0.5) out.push(cur);
+    }
+    out.push(path[path.length - 1]);
+    return out;
+}
+
+function getNavArrowTarget() {
+    if (currentNavPath.length === 0) return beaconGroup.position;
+    const advanceDist = NAV_CELL * 1.5;
+    while (currentNavIndex < currentNavPath.length - 1) {
+        const wp = currentNavPath[currentNavIndex];
+        const dx = playerGroup.position.x - wp.x;
+        const dz = playerGroup.position.z - wp.z;
+        if (dx * dx + dz * dz < advanceDist * advanceDist) {
+            currentNavIndex++;
+        } else {
+            break;
+        }
+    }
+    return currentNavPath[currentNavIndex] || beaconGroup.position;
 }
 
 function updateWantedSystem() {
@@ -1188,6 +1420,71 @@ function spawnPowerup() {
     createPowerupGroup(type, pos);
 }
 
+function createStarSprite() {
+    const size = 256;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    const cx = size / 2, cy = size / 2;
+    const numPoints = 5, outerR = 115, innerR = 50;
+    // How far from the inner vertex to start/end each valley curve.
+    // 0 = sharp (original), 1 = fully rounded; 0.38 gives the H&R pillowy look.
+    const roundness = 0.38;
+
+    ctx.shadowColor = 'rgba(240, 185, 0, 0.65)';
+    ctx.shadowBlur = 14;
+
+    // Star path: straight spokes, quadratic-bezier inner valleys
+    ctx.beginPath();
+    for (let i = 0; i < numPoints; i++) {
+        const outerAngle    = (i / numPoints) * Math.PI * 2 - Math.PI / 2;
+        const innerAngle    = outerAngle + Math.PI / numPoints;
+        const nextOuterAngle = ((i + 1) / numPoints) * Math.PI * 2 - Math.PI / 2;
+
+        const ox  = cx + Math.cos(outerAngle)     * outerR;
+        const oy  = cy + Math.sin(outerAngle)     * outerR;
+        const ix  = cx + Math.cos(innerAngle)     * innerR;
+        const iy  = cy + Math.sin(innerAngle)     * innerR;
+        const nox = cx + Math.cos(nextOuterAngle) * outerR;
+        const noy = cy + Math.sin(nextOuterAngle) * outerR;
+
+        // q1/q2 are the bezier endpoints, inset from the inner vertex toward each spoke
+        const q1x = ix + (ox  - ix) * roundness,  q1y = iy + (oy  - iy) * roundness;
+        const q2x = ix + (nox - ix) * roundness,  q2y = iy + (noy - iy) * roundness;
+
+        if (i === 0) ctx.moveTo(ox, oy); else ctx.lineTo(ox, oy);
+        ctx.lineTo(q1x, q1y);
+        ctx.quadraticCurveTo(ix, iy, q2x, q2y);
+        // closePath (after final iteration) draws the last straight edge back to outer_0
+    }
+    ctx.closePath();
+
+    // Warm gold gradient — noticeably yellow, not white
+    const grad = ctx.createRadialGradient(cx, cy - 18, 6, cx, cy, outerR);
+    grad.addColorStop(0,   '#FFF176'); // light yellow, not white
+    grad.addColorStop(0.5, '#FBC02D'); // golden yellow
+    grad.addColorStop(1,   '#E65100'); // deep orange edge
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.strokeStyle = '#BF360C';
+    ctx.lineWidth = 5;
+    ctx.stroke();
+
+    const tex = new THREE.CanvasTexture(canvas);
+    const mat = new THREE.SpriteMaterial({
+        map: tex,
+        transparent: true,
+        depthWrite: false,
+        depthTest: true,   // depth buffer hides star behind buildings and opaque model parts
+    });
+    const sprite = new THREE.Sprite(mat);
+    sprite.renderOrder = -1; // renders first in transparent pass so transparent model parts overwrite it
+    sprite.scale.set(6, 6, 1);
+    sprite.position.y = 1.2;
+    return sprite;
+}
+
 function createPowerupGroup(type, pos) {
     const group = new THREE.Group();
     group.position.copy(pos);
@@ -1249,11 +1546,10 @@ function createPowerupGroup(type, pos) {
         group.userData = { type: 'armor_belt', active: true };
     }
     
-    //const laser = new THREE.Line(
-    //    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0), new THREE.Vector3(0,50,0)]),
-    //    new THREE.LineBasicMaterial({ color: 0xFF00FF })
-    //);
-    //group.add(laser);
+    // Cartoon yellow star backdrop (Simpsons H&R style)
+    const star = createStarSprite();
+    group.add(star);
+    group.userData.star = star;
 
     scene.add(group);
     powerups.push(group);
@@ -1266,7 +1562,11 @@ window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
     if (k === ' ') { e.preventDefault(); }
     if (keys.hasOwnProperty(k)) keys[k] = true;
-    if (k === ' ') keys.space = true; 
+    if (k === ' ') keys.space = true;
+    if (e.key === 'ArrowUp')    { e.preventDefault(); keys.w = true; }
+    if (e.key === 'ArrowDown')  { e.preventDefault(); keys.s = true; }
+    if (e.key === 'ArrowLeft')  { e.preventDefault(); keys.a = true; }
+    if (e.key === 'ArrowRight') { e.preventDefault(); keys.d = true; }
     if (k === 'p') isPaused = !isPaused;
     if (k === 'm') isMapOpen = !isMapOpen;
     if (k === 't') { isTimerRunning = !isTimerRunning; }
@@ -1276,8 +1576,12 @@ window.addEventListener('keyup', (e) => {
     if (keys.hasOwnProperty(k)) keys[k] = false;
     if (k === ' ') {
         keys.space = false;
-        jumpLocked = false; 
+        jumpLocked = false;
     }
+    if (e.key === 'ArrowUp')    keys.w = false;
+    if (e.key === 'ArrowDown')  keys.s = false;
+    if (e.key === 'ArrowLeft')  keys.a = false;
+    if (e.key === 'ArrowRight') keys.d = false;
 });
 
 const clock = new THREE.Clock();
@@ -1316,6 +1620,15 @@ function animate() {
             spawnPowerup();
             spawnTimer = 0;
         }
+
+        // Retry path if it failed at spawn (e.g. navGrid wasn't ready yet)
+        pathRetryTimer += delta;
+        if (currentNavPath.length === 0 && navGrid && pathRetryTimer > 2.0) {
+            pathRetryTimer = 0;
+            const retried = findRoadPath(playerGroup.position, beaconGroup.position);
+            if (retried && retried.length > 0) { currentNavPath = retried; currentNavIndex = 0; }
+        }
+
         if (timeLeft <= 0) {
             timeLeft = 0;
             gameActive = false;
@@ -1470,7 +1783,10 @@ function animate() {
             const p = powerups[i];
             // ... inside the powerups loop
             if (p.userData.type !== 'bike') {
-                p.rotation.y += delta; 
+                p.rotation.y += delta;
+            }
+            if (p.userData.star) {
+                p.userData.star.material.rotation -= delta * 2.5;
             }
             
             if (p.userData.active && playerGroup.position.distanceTo(p.position) < 2.5) {
@@ -1507,10 +1823,27 @@ function animate() {
             if (Math.abs(joystickInput.x) > 0.1) cameraAngle -= joystickInput.x * cameraRotationSpeed * 2.0;
 
             // 2. JUMP
+            if (isGrounded) wallJumpsRemaining = 1; // refresh each time player is on ground
             if (keys.space && isGrounded && !jumpLocked) {
                 verticalVelocity = JUMP_FORCE;
                 isGrounded = false;
                 jumpLocked = true;
+            }
+            // Wall jump: one bonus jump while airborne if a wall is within reach
+            if (keys.space && !isGrounded && !jumpLocked && wallJumpsRemaining > 0) {
+                const wallOrigin = playerGroup.position.clone();
+                wallOrigin.y += 1;
+                let wallFound = false;
+                for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
+                    raycaster.set(wallOrigin, new THREE.Vector3(Math.sin(a), 0, Math.cos(a)));
+                    const hits = raycaster.intersectObjects(colliderMeshes, false);
+                    if (hits.length > 0 && hits[0].distance < 3.0) { wallFound = true; break; }
+                }
+                if (wallFound) {
+                    verticalVelocity = JUMP_FORCE * 0.9;
+                    jumpLocked = true;
+                    wallJumpsRemaining--;
+                }
             }
 
             // 2c. SUPER JUMP (square button, consumes stored boost)
@@ -1698,7 +2031,58 @@ function animate() {
                 isGrounded = false;
             }
 
-            arrowMesh.lookAt(beaconGroup.position.x, 4, beaconGroup.position.z);
+            getNavArrowTarget(); // advances currentNavIndex as player moves along path
+
+            // Ground-presence timer — must outlast a full normal jump (≈1 s)
+            if (isGrounded) {
+                navLineGroundTimer = 3.0;
+            } else {
+                navLineGroundTimer = Math.max(0, navLineGroundTimer - delta);
+            }
+
+            const lineActive = currentNavPath.length > 0 && navLineGroundTimer > 0;
+
+            // Cone: only visible when no route line is showing; points straight at beacon
+            arrowMesh.visible = !lineActive;
+            if (!lineActive) {
+                arrowMesh.lookAt(beaconGroup.position.x, 4, beaconGroup.position.z);
+            }
+
+            // Route line — geometry rebuilt at ~8 fps to avoid per-frame Catmull-Rom cost
+            navLineUpdateTimer += delta;
+            if (lineActive) {
+                if (navLineUpdateTimer >= 0.12) {
+                    navLineUpdateTimer = 0;
+                    const LINE_LIFT = 0.4;
+                    const SKIP_DIST = 12;
+                    const rawPts = [];
+                    const firstWp = currentNavPath[currentNavIndex] || beaconGroup.position;
+                    const toFirst = new THREE.Vector3().subVectors(firstWp, playerGroup.position);
+                    if (toFirst.length() > SKIP_DIST) {
+                        const skipStart = playerGroup.position.clone()
+                            .addScaledVector(toFirst.normalize(), SKIP_DIST);
+                        skipStart.y += LINE_LIFT;
+                        rawPts.push(skipStart);
+                    }
+                    for (let pi = currentNavIndex; pi < currentNavPath.length; pi++) {
+                        const wp = currentNavPath[pi].clone();
+                        wp.y += LINE_LIFT;
+                        rawPts.push(wp);
+                    }
+                    if (rawPts.length >= 2) {
+                        const curve = new THREE.CatmullRomCurve3(rawPts);
+                        const smooth = curve.getPoints(Math.max(rawPts.length * 5, 30));
+                        const flat = [];
+                        for (const p of smooth) flat.push(p.x, p.y, p.z);
+                        navLineGeo.setPositions(flat);
+                        navLine.computeLineDistances();
+                    }
+                }
+                navLine.visible = true;
+            } else {
+                navLine.visible = false;
+                navLineUpdateTimer = 0.12; // force immediate rebuild when line next activates
+            }
             if (playerGroup.position.distanceTo(beaconGroup.position) < 10) { 
                 score++;
                 timeLeft += TIME_BONUS;
@@ -1763,6 +2147,7 @@ window.addEventListener('resize', () => {
     composer.setSize(window.innerWidth, window.innerHeight); 
     
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    navLineMat.resolution.set(window.innerWidth, window.innerHeight);
 
     // --- NEW: REBUILD JOYSTICK ON RESIZE ---
     if (typeof initJoystick === 'function') {

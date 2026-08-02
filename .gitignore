@@ -1,0 +1,4 @@
+# Asset optimizer working files (see tools/optimize-assets.mjs)
+tools/node_modules/
+optimized/
+*.glb.bak

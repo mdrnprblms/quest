@@ -1,0 +1,16 @@
+{
+  "name": "mdrn-quest-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "optimize": "node optimize-assets.mjs"
+  },
+  "dependencies": {
+    "@gltf-transform/core": "^4.4.2",
+    "@gltf-transform/extensions": "^4.4.2",
+    "@gltf-transform/functions": "^4.4.2",
+    "draco3d": "^1.5.7",
+    "meshoptimizer": "^0.22.0",
+    "sharp": "^0.35.3"
+  }
+}

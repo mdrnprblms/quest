@@ -307,6 +307,9 @@
         arr.push({ t: Date.now(), iso: new Date().toISOString(), type, data });
         writeLog(arr);
     }
+    // Let game.js push renderer stats into the same crash log, so the on-screen
+    // badge shows GPU texture/geometry counts from the run that died.
+    window.mqLog = log;
 
     // ---- Detect "silent reload" on startup ----
     // If a heartbeat was written less than 5s ago AND we're freshly executing top-level code,
@@ -491,6 +494,7 @@
         <button class="debug-btn" onclick="window.debugSpawn('armor_belt')">SPAWN BELT</button>
         
         <button class="debug-btn" onclick="window.spawnPolice()">SPAWN POLICE</button>
+        <button class="debug-btn" onclick="window.toggleStats()">PERF STATS (I)</button>
     </div>
 
     <script type="importmap">

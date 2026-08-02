@@ -172,8 +172,8 @@ window.resetGame = () => {
     
     // 6. Spawn Initial Items
     spawnBeacon();
-    
-    spawnPowerup(); 
+
+    for (let i = 0; i < 8; i++) spawnPowerup();
 
     // 7. Hide UI
     const uiGameOver = document.getElementById('game-over');
@@ -329,7 +329,15 @@ const TIME_BONUS = 30.0;
 const BASE_SPEED = 20.0; 
 const BIKE_MULTIPLIER = 1.8; 
 const SUPER_JUMP_FORCE = 150.0;
-const POWERUP_SPAWN_RATE = 0.5; // DRAMATICALLY INCREASED RATE (0.5s instead of 5.0s)
+
+// PICKUP BUDGET
+// Previously one spawned every 0.5s with no cap and no despawn — ~360 per round,
+// each cloning a template up to 1.4M triangles. These three constants are what
+// keep pickups bounded; tune the rate/max together if you want a busier map.
+const POWERUP_SPAWN_RATE   = 1.2;   // seconds between spawn attempts
+const MAX_POWERUPS         = 14;    // hard ceiling on live pickups
+const POWERUP_SPAWN_RADIUS = 420;   // spawn ring around the player
+const POWERUP_DESPAWN_DIST = 700;   // cull once the player has ridden past
 
 // MAP & AI CONFIG
 const MAP_LIMIT = 4000;            
@@ -517,12 +525,137 @@ camera.position.set(0, 20, 20);
 const renderer = new THREE.WebGLRenderer({ antialias: !isIOS, powerPreference: 'high-performance' });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(targetPixelRatio());
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
-renderer.useLegacyLights = false; 
+// Shadows cost a second pass over all 1.8M city triangles / 800+ draw calls.
+// At a 512px map spanning 600 world units a character is ~3px wide, so on iOS
+// we were paying full price for something effectively invisible.
+renderer.shadowMap.enabled = !isIOS;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.useLegacyLights = false;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 document.body.appendChild(renderer.domElement);
+
+// Surviving a GPU reset beats a blank canvas. iOS usually kills the tab outright
+// rather than firing this, but it's a free safety net.
+renderer.domElement.addEventListener('webglcontextlost', (e) => {
+    e.preventDefault();
+    console.warn('WebGL context lost — GPU memory pressure.');
+    if (window.mqLog) window.mqLog('WEBGL_CONTEXT_LOST_GAME', rendererStats());
+}, false);
+
+// --- TEXTURE MEMORY GOVERNOR ---
+// The raw assets decode to >1GB of GPU texture memory (shoreditch.glb alone is
+// 573MB across 813 textures, customer.glb is 255MB in three 4096px PNGs).
+// iOS Safari kills the tab somewhere north of ~300-400MB, so every texture is
+// downsampled on the CPU before it is ever uploaded.
+//
+// The city is death by a thousand tiles, not a few big textures: shoreditch has
+// 813 images averaging ~512px, which is ~590MB however you cap the outliers. The
+// only lever that moves that number is capping ALL of them, hence the low world
+// cap on iOS. Measured totals for a full shoreditch session:
+//     uncapped              1.09 GB   (tab is killed)
+//     world 512 / char 1024   755 MB  (fine on desktop, still fatal on iOS)
+//     world 128 / char 512     ~95 MB (iOS target)
+// Raise TEX_CAP_WORLD if you want sharper facades and can afford the memory.
+// The better fix is tools/optimize-assets.mjs, which bakes the resize into the
+// .glb — that cuts download size and decode time too, not just GPU memory, and
+// lets this runtime cap be relaxed.
+const TEX_CAP_WORLD = isIOS ? 128 : 512;   // city tiles — hundreds of them
+const TEX_CAP_CHAR  = isIOS ? 512 : 1024;  // characters, pickups, props
+
+// Keyed on the source image so textures sharing a bitmap are only resized once.
+const resizedImageCache = new WeakMap();
+
+function downscaleImage(img, cap) {
+    const w = img.width, h = img.height;
+    if (!w || !h || Math.max(w, h) <= cap) return null;
+    if (resizedImageCache.has(img)) return resizedImageCache.get(img);
+
+    const scale = cap / Math.max(w, h);
+    const canvas = document.createElement('canvas');
+    canvas.width  = Math.max(1, Math.round(w * scale));
+    canvas.height = Math.max(1, Math.round(h * scale));
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    resizedImageCache.set(img, canvas);
+    // Release the full-size decode immediately rather than waiting on GC.
+    if (typeof img.close === 'function') img.close();
+    return canvas;
+}
+
+function optimizeMaterial(mat, cap) {
+    for (const key in mat) {
+        const value = mat[key];
+        if (!value || !value.isTexture || !value.image) continue;
+        const smaller = downscaleImage(value.image, cap);
+        if (smaller) {
+            value.image = smaller;
+            value.needsUpdate = true;
+        }
+        value.anisotropy = isIOS ? 1 : 4;
+    }
+}
+
+// Applied to every GLB the moment it lands, before its first render.
+function optimizeModel(root, { cap = TEX_CAP_CHAR, castShadow = true, receiveShadow = true } = {}) {
+    const seenMaterials = new Set();
+    root.traverse(o => {
+        if (!o.isMesh) return;
+        o.castShadow    = castShadow    && renderer.shadowMap.enabled;
+        o.receiveShadow = receiveShadow && renderer.shadowMap.enabled;
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        for (const m of mats) {
+            if (!m || seenMaterials.has(m)) continue;
+            seenMaterials.add(m);
+            optimizeMaterial(m, cap);
+        }
+    });
+    return root;
+}
+
+function rendererStats() {
+    const i = renderer.info;
+    return {
+        geometries: i.memory.geometries,
+        textures: i.memory.textures,
+        programs: i.programs ? i.programs.length : 0,
+        calls: i.render.calls,
+        tris: i.render.triangles,
+        powerups: powerups.length,
+        enemies: activeEnemies.length,
+        pixelRatio: +renderer.getPixelRatio().toFixed(2)
+    };
+}
+window.mqStats = rendererStats;
+
+// Measured GPU texture footprint of everything currently in the scene.
+// renderer.info only reports a texture *count*, which hides the problem —
+// 813 tiny tiles and 3 4096px PNGs look similar by count and differ 100x in bytes.
+function textureBytes() {
+    const seen = new Set();
+    let bytes = 0, count = 0, largest = 0;
+    scene.traverse(o => {
+        if (!o.isMesh && !o.isSprite) return;
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        for (const m of mats) {
+            if (!m) continue;
+            for (const k in m) {
+                const t = m[k];
+                if (!t || !t.isTexture || !t.image || seen.has(t)) continue;
+                seen.add(t);
+                const w = t.image.width || 0, h = t.image.height || 0;
+                bytes += w * h * 4 * 1.33; // RGBA8 + mip chain
+                largest = Math.max(largest, w, h);
+                count++;
+            }
+        }
+    });
+    return { megabytes: +(bytes / 1048576).toFixed(1), textures: count, largestPx: largest };
+}
+window.mqTextureBytes = textureBytes;
 
 // --- POST-PROCESSING SETUP (BOKEH) — skipped on iOS to save memory ---
 let composer = null;
@@ -554,9 +687,9 @@ scene.add(hemiLight);
 const ambientLight = new THREE.AmbientLight(0xccccff, 1.5); 
 scene.add(ambientLight);
 
-const dirLight = new THREE.DirectionalLight(0xaaccff, 1.2); 
-dirLight.position.set(50, 200, 50); 
-dirLight.castShadow = true;
+const dirLight = new THREE.DirectionalLight(0xaaccff, 1.2);
+dirLight.position.set(50, 200, 50);
+dirLight.castShadow = renderer.shadowMap.enabled;
 dirLight.shadow.mapSize.width = isIOS ? 512 : 1024;
 dirLight.shadow.mapSize.height = isIOS ? 512 : 1024;
 dirLight.shadow.bias = -0.0005;
@@ -630,15 +763,9 @@ beaconGroup.add(beaconLight);
 
 //ADDING CUSTOMER MODEL
 loader.load('customer.glb', (gltf) => {
-    const customerMesh = gltf.scene;
+    // Ships with three 4096px PNGs — 255MB of GPU memory for one NPC.
+    const customerMesh = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR });
     customerMesh.scale.set(4.0, 4.0, 4.0); // Adjust size if needed
-    
-    customerMesh.traverse(o => { 
-        if (o.isMesh) { 
-            o.castShadow = true; 
-            o.receiveShadow = true; 
-        } 
-    });
 
     beaconGroup.add(customerMesh);
 
@@ -742,18 +869,21 @@ function loadLevel(mapName) {
                     colliderMeshes.push(child);
                 }
                 else if (child.name !== "IGNORE_ME") {
-                    child.castShadow = true;
-                    child.receiveShadow = true;
-                    child.name = "CITY_MESH"; 
-                    
+                    child.castShadow = renderer.shadowMap.enabled;
+                    child.receiveShadow = renderer.shadowMap.enabled;
+                    child.name = "CITY_MESH";
+
                     // --- NEW: BUILD SEARCH INDEX FOR THIS SPECIFIC TILE ---
-                    if (child.geometry) child.geometry.computeBoundsTree(); 
-                    
+                    if (child.geometry) child.geometry.computeBoundsTree();
+
                     colliderMeshes.push(child); // Buildings / Ground
                     if (child.material) {
                         child.material.roughness = 0.9;
                         child.material.metalness = 0.1;
-                        child.material.side = THREE.DoubleSide; 
+                        child.material.side = THREE.DoubleSide;
+                        // Downsample this tile's texture before it reaches the GPU.
+                        // Uncapped, these 500-800 tiles are 380-573MB on their own.
+                        optimizeMaterial(child.material, TEX_CAP_WORLD);
                     }
 
                     // Inside the traverse, after: colliderMeshes.push(child)
@@ -785,11 +915,16 @@ function loadLevel(mapName) {
         // Spawn initial roaming NPCs
         for (let i = 0; i < 5; i++) spawnRoamingNPC();
 
-        // --- MASSIVE POWERUP SPAWN ---
-        // Spawn 100 random items immediately across the map
-        spawnPowerup();
+        // Seed the pickup budget; the rest trickle in around the player as they ride.
+        for (let i = 0; i < 8; i++) spawnPowerup();
 
         document.getElementById('loading-screen').style.display = 'none';
+
+        // Record what this map actually cost, so the iPhone crash badge has numbers.
+        renderer.render(scene, camera); // flush uploads so info.memory is accurate
+        const stats = rendererStats();
+        console.log('Map loaded:', mapName, stats);
+        if (window.mqLog) window.mqLog('MAP_LOADED', { map: mapName, ...stats });
 
     }, undefined, (err) => {
         console.error("Map Error:", err);
@@ -807,20 +942,16 @@ let animationsMap = new Map();
 let currentAction;
 
 loader.load('playermodel.glb', (gltf) => {
-    playerMesh = gltf.scene;
-    playerMesh.scale.set(2.0, 2.0, 2.0); 
-    playerMesh.rotation.y = Math.PI; 
-    
-    playerMesh.traverse(o => { 
-        if (o.isMesh) { 
-            o.castShadow = true; 
-            o.receiveShadow = true;
-            if (o.material) {
-                o.material.metalness = 0.0; 
-                o.material.roughness = 0.8; 
-                if (o.material.color) o.material.color.set(0xffffff);
-            }
-        } 
+    playerMesh = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR });
+    playerMesh.scale.set(2.0, 2.0, 2.0);
+    playerMesh.rotation.y = Math.PI;
+
+    playerMesh.traverse(o => {
+        if (o.isMesh && o.material) {
+            o.material.metalness = 0.0;
+            o.material.roughness = 0.8;
+            if (o.material.color) o.material.color.set(0xffffff);
+        }
     });
 
     playerGroup.add(playerMesh);
@@ -843,22 +974,18 @@ loader.load('playermodel.glb', (gltf) => {
 
 // --- PLAYER BIKE LOADER ---
 loader.load('playerbike.glb', (gltf) => {
-    playerBikeMesh = gltf.scene;
-    playerBikeMesh.scale.set(2.0, 2.0, 2.0); 
+    playerBikeMesh = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR });
+    playerBikeMesh.scale.set(2.0, 2.0, 2.0);
     playerBikeMesh.rotation.y = THREE.MathUtils.degToRad(180);
     playerBikeMesh.visible = false; // Hidden by default (until powerup collected)
 
-    playerBikeMesh.traverse(o => { 
-        if (o.isMesh) { 
-            o.castShadow = true; 
-            o.receiveShadow = true;
-            // Fix dark materials if necessary
-            if (o.material) {
-                o.material.metalness = 0.0; 
-                o.material.roughness = 0.8; 
-                if (o.material.color) o.material.color.set(0xffffff);
-            }
-        } 
+    playerBikeMesh.traverse(o => {
+        // Fix dark materials if necessary
+        if (o.isMesh && o.material) {
+            o.material.metalness = 0.0;
+            o.material.roughness = 0.8;
+            if (o.material.color) o.material.color.set(0xffffff);
+        }
     });
 
     playerGroup.add(playerBikeMesh);
@@ -876,59 +1003,56 @@ loader.load('playerbike.glb', (gltf) => {
 
 // --- ENEMY LOADER ---
 loader.load('police.glb', (gltf) => {
-    policeTemplate = gltf.scene;
-    
-    policeTemplate.traverse(o => { 
-        if (o.isMesh) { 
-            o.castShadow = true; 
-            o.receiveShadow = true;
-        } 
-    });
-    
+    policeTemplate = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR });
     policeClips = gltf.animations;
     console.log("Police Template Loaded");
 }, undefined, (err) => console.error("Police Model Error:", err));
 
 
 // --- POWERUP ASSETS ---
+// Pickups never cast shadows: the tee alone is 1.4M triangles, and paying for it
+// twice in the shadow pass buys nothing at this shadow map resolution.
 loader.load('limebike.glb', (gltf) => {
-    bikeTemplate = gltf.scene;
+    bikeTemplate = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR, castShadow: false });
     bikeTemplate.scale.set(2.5, 2.5, 2.5);
-    bikeTemplate.traverse(o => { 
-        if(o.isMesh) { 
-            o.castShadow = true; o.receiveShadow = true;
-            if (o.material) {
-                o.material.color.set(0xffffff);
-                o.material.metalness = 0.1; 
-                o.material.roughness = 0.5;
-                o.material.emissive = new THREE.Color(0x222222); 
-            }
+    bikeTemplate.traverse(o => {
+        if (o.isMesh && o.material) {
+            o.material.color.set(0xffffff);
+            o.material.metalness = 0.1;
+            o.material.roughness = 0.5;
+            o.material.emissive = new THREE.Color(0x222222);
         }
     });
 });
 
 loader.load('monster_zero_ultra.glb', (gltf) => {
-    drinkTemplate = gltf.scene;
+    drinkTemplate = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR, castShadow: false });
     drinkTemplate.scale.set(0.6, 0.6, 0.6);
-    drinkTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
 });
 
 loader.load('liontee.glb', (gltf) => {
-    lionTeeTemplate = gltf.scene;
-    lionTeeTemplate.scale.set(2.5, 2.5, 2.5); // <--- Dropped from 5
-    lionTeeTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
-});
+    lionTeeTemplate = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR, castShadow: false });
+    lionTeeTemplate.scale.set(2.5, 2.5, 2.5);
 
-loader.load('lionteegrey.glb', (gltf) => {
-    lionTeeGreyTemplate = gltf.scene;
-    lionTeeGreyTemplate.scale.set(2.5, 2.5, 2.5); // <--- Dropped from 5
-    lionTeeGreyTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
+    // lionteegrey.glb is a byte-for-byte duplicate of liontee.glb (identical MD5),
+    // so we build the grey variant off the same geometry and textures instead of
+    // paying for a second 39MB download and a second 59MB texture upload.
+    lionTeeGreyTemplate = lionTeeTemplate.clone();
+    lionTeeGreyTemplate.traverse(o => {
+        if (!o.isMesh || !o.material) return;
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        const greyed = mats.map(m => {
+            const c = m.clone();            // clone shares the texture objects
+            if (c.color) c.color.set(0x8f8f8f);
+            return c;
+        });
+        o.material = Array.isArray(o.material) ? greyed : greyed[0];
+    });
 });
 
 loader.load('belt.glb', (gltf) => {
-    beltTemplate = gltf.scene;
-    beltTemplate.scale.set(2.0, 2.0, 2.0); 
-    beltTemplate.traverse(o => { if(o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
+    beltTemplate = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR, castShadow: false });
+    beltTemplate.scale.set(2.0, 2.0, 2.0);
 });
 
 
@@ -1429,10 +1553,14 @@ function spawnRoamingNPC() {
 }
 
 function spawnPowerup() {
-    // Try to get a valid road position 
-    // We check anywhere from center (0,0) out to MAP_LIMIT (4000)
-    let pos = getAnywhereSpawnPoint(new THREE.Vector3(0,0,0), 0, MAP_LIMIT * 0.9);
-    
+    if (powerups.length >= MAX_POWERUPS) return;
+
+    // Spawn in a ring around the player rather than anywhere in a 3600-unit disc.
+    // The old map-wide scatter only felt dense because nothing was ever removed;
+    // with a live budget, keeping pickups near the player is what makes them
+    // findable — and it lets the distance cull recycle them as you ride on.
+    const pos = getAnywhereSpawnPoint(playerGroup.position, 60, POWERUP_SPAWN_RADIUS);
+
     if (!pos) return;
 
     const roll = Math.random();
@@ -1444,69 +1572,92 @@ function spawnPowerup() {
     createPowerupGroup(type, pos);
 }
 
-function createStarSprite() {
-    const size = 256;
+// --- PICKUP GLOW ---
+// Replaces the old cartoon star. Beyond looking better, the star built a fresh
+// 256px canvas + CanvasTexture per pickup and never disposed it — with pickups
+// spawning twice a second that leaked ~125MB of GPU memory over a round.
+// Everything below is created once and shared by every pickup in the game.
+
+let glowTexture = null;
+function getGlowTexture() {
+    if (glowTexture) return glowTexture;
+    const size = 128;
     const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
+    canvas.width = canvas.height = size;
     const ctx = canvas.getContext('2d');
-    const cx = size / 2, cy = size / 2;
-    const numPoints = 5, outerR = 115, innerR = 50;
-    // How far from the inner vertex to start/end each valley curve.
-    // 0 = sharp (original), 1 = fully rounded; 0.38 gives the H&R pillowy look.
-    const roundness = 0.38;
+    const c = size / 2;
 
-    ctx.shadowColor = 'rgba(240, 185, 0, 0.65)';
-    ctx.shadowBlur = 14;
+    // Tight hot core falling off into a wide, very soft halo. The long tail is
+    // what stops it reading as a hard-edged decal.
+    const g = ctx.createRadialGradient(c, c, 0, c, c, c);
+    g.addColorStop(0.00, 'rgba(255,255,255,1.00)');
+    g.addColorStop(0.12, 'rgba(255,252,235,0.90)');
+    g.addColorStop(0.28, 'rgba(255,236,170,0.45)');
+    g.addColorStop(0.50, 'rgba(255,210,110,0.16)');
+    g.addColorStop(0.75, 'rgba(255,180,70,0.04)');
+    g.addColorStop(1.00, 'rgba(255,160,50,0.00)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, size, size);
 
-    // Star path: straight spokes, quadratic-bezier inner valleys
-    ctx.beginPath();
-    for (let i = 0; i < numPoints; i++) {
-        const outerAngle    = (i / numPoints) * Math.PI * 2 - Math.PI / 2;
-        const innerAngle    = outerAngle + Math.PI / numPoints;
-        const nextOuterAngle = ((i + 1) / numPoints) * Math.PI * 2 - Math.PI / 2;
+    glowTexture = new THREE.CanvasTexture(canvas);
+    glowTexture.colorSpace = THREE.SRGBColorSpace;
+    return glowTexture;
+}
 
-        const ox  = cx + Math.cos(outerAngle)     * outerR;
-        const oy  = cy + Math.sin(outerAngle)     * outerR;
-        const ix  = cx + Math.cos(innerAngle)     * innerR;
-        const iy  = cy + Math.sin(innerAngle)     * innerR;
-        const nox = cx + Math.cos(nextOuterAngle) * outerR;
-        const noy = cy + Math.sin(nextOuterAngle) * outerR;
-
-        // q1/q2 are the bezier endpoints, inset from the inner vertex toward each spoke
-        const q1x = ix + (ox  - ix) * roundness,  q1y = iy + (oy  - iy) * roundness;
-        const q2x = ix + (nox - ix) * roundness,  q2y = iy + (noy - iy) * roundness;
-
-        if (i === 0) ctx.moveTo(ox, oy); else ctx.lineTo(ox, oy);
-        ctx.lineTo(q1x, q1y);
-        ctx.quadraticCurveTo(ix, iy, q2x, q2y);
-        // closePath (after final iteration) draws the last straight edge back to outer_0
-    }
-    ctx.closePath();
-
-    // Warm gold gradient — noticeably yellow, not white
-    const grad = ctx.createRadialGradient(cx, cy - 18, 6, cx, cy, outerR);
-    grad.addColorStop(0,   '#FFF176'); // light yellow, not white
-    grad.addColorStop(0.5, '#FBC02D'); // golden yellow
-    grad.addColorStop(1,   '#E65100'); // deep orange edge
-    ctx.fillStyle = grad;
-    ctx.fill();
-    ctx.strokeStyle = '#BF360C';
-    ctx.lineWidth = 5;
-    ctx.stroke();
-
-    const tex = new THREE.CanvasTexture(canvas);
-    const mat = new THREE.SpriteMaterial({
-        map: tex,
+// One material per colour, shared across all pickups of that type, so the pulse
+// is a single opacity write per frame rather than one per pickup.
+const glowMaterialCache = new Map();
+function getGlowMaterial(color, baseOpacity) {
+    const key = `${color}_${baseOpacity}`;
+    let mat = glowMaterialCache.get(key);
+    if (mat) return mat;
+    mat = new THREE.SpriteMaterial({
+        map: getGlowTexture(),
+        color: color,
         transparent: true,
+        opacity: baseOpacity,
+        blending: THREE.AdditiveBlending, // light, not a sticker
         depthWrite: false,
-        depthTest: true,   // depth buffer hides star behind buildings and opaque model parts
+        depthTest: true,                  // still occluded by buildings
+        toneMapped: false                 // keep the core genuinely bright
     });
-    const sprite = new THREE.Sprite(mat);
-    sprite.renderOrder = -1; // renders first in transparent pass so transparent model parts overwrite it
-    sprite.scale.set(6, 6, 1);
-    sprite.position.y = 1.2;
-    return sprite;
+    mat.userData.baseOpacity = baseOpacity;
+    glowMaterialCache.set(key, mat);
+    return mat;
+}
+
+const GLOW_COLORS = {
+    bike:       0x7CFF5A,
+    drink:      0x5AE8FF,
+    armor_tee:  0xFFC83D,
+    armor_belt: 0xFF9A3D
+};
+
+// Halo + core, both billboarded. Two layers give the falloff real depth.
+function createGlow(type) {
+    const color = GLOW_COLORS[type] || 0xFFC83D;
+    const group = new THREE.Group();
+
+    const halo = new THREE.Sprite(getGlowMaterial(color, 0.55));
+    halo.scale.set(9, 9, 1);
+    halo.renderOrder = -2;
+    group.add(halo);
+
+    const core = new THREE.Sprite(getGlowMaterial(color, 0.85));
+    core.scale.set(3.2, 3.2, 1);
+    core.renderOrder = -1;
+    group.add(core);
+
+    group.position.y = 1.0;
+    return group;
+}
+
+// Called once per frame for the whole game, not once per pickup.
+function updateGlowPulse(elapsed) {
+    const pulse = 0.78 + Math.sin(elapsed * 2.6) * 0.22;
+    glowMaterialCache.forEach(mat => {
+        mat.opacity = mat.userData.baseOpacity * pulse;
+    });
 }
 
 function createPowerupGroup(type, pos) {
@@ -1570,13 +1721,24 @@ function createPowerupGroup(type, pos) {
         group.userData = { type: 'armor_belt', active: true };
     }
     
-    // Cartoon yellow star backdrop (Simpsons H&R style)
-    const star = createStarSprite();
-    group.add(star);
-    group.userData.star = star;
+    const glow = createGlow(type);
+    group.add(glow);
+    group.userData.glow = glow;
+    group.userData.bobPhase = Math.random() * Math.PI * 2;
 
     scene.add(group);
     powerups.push(group);
+}
+
+// Clones share geometry, materials and textures with their template, and the glow
+// uses cached shared materials — so removal is just an unlink. Disposing here
+// would destroy the template every other pickup still depends on.
+function removePowerup(index) {
+    const p = powerups[index];
+    if (!p) return;
+    scene.remove(p);
+    p.userData.active = false;
+    powerups.splice(index, 1);
 }
 
 
@@ -1594,6 +1756,7 @@ window.addEventListener('keydown', (e) => {
     if (k === 'p') isPaused = !isPaused;
     if (k === 'm') isMapOpen = !isMapOpen;
     if (k === 't') { isTimerRunning = !isTimerRunning; }
+    if (k === 'i') toggleStats();
 });
 window.addEventListener('keyup', (e) => {
     const k = e.key.toLowerCase();
@@ -1610,11 +1773,73 @@ window.addEventListener('keyup', (e) => {
 
 const clock = new THREE.Clock();
 
+// --- ADAPTIVE RESOLUTION ---
+// If the device can't hold framerate, trade pixels for it before the user notices
+// stutter. Rises back once there's headroom, so desktops aren't punished.
+let qualityScale = 1.0;
+let fpsAccum = 0, fpsFrames = 0, fpsWindow = 0;
+let lastFps = 0;
+
+function updateAdaptiveQuality(delta) {
+    fpsAccum += delta;
+    fpsFrames++;
+    fpsWindow += delta;
+    if (fpsWindow < 2.0) return;
+
+    const fps = fpsFrames / fpsAccum;
+    fpsAccum = 0; fpsFrames = 0; fpsWindow = 0;
+
+    const prev = qualityScale;
+    if (fps < 26 && qualityScale > 0.7) qualityScale -= 0.15;
+    else if (fps > 52 && qualityScale < 1.0) qualityScale += 0.1;
+    qualityScale = Math.max(0.7, Math.min(1.0, qualityScale));
+
+    if (qualityScale !== prev) {
+        renderer.setPixelRatio(targetPixelRatio() * qualityScale);
+        if (composer) composer.setPixelRatio(targetPixelRatio() * qualityScale);
+    }
+    lastFps = fps;
+}
+
+// --- STATS OVERLAY (press I, or use the pause menu on mobile) ---
+let statsEl = null;
+let statsTimer = 0;
+function toggleStats() {
+    if (statsEl) { statsEl.remove(); statsEl = null; return; }
+    statsEl = document.createElement('pre');
+    statsEl.style.cssText = `
+        position:fixed; bottom:8px; left:8px; z-index:99998;
+        background:rgba(0,0,0,0.8); color:#0f0; font:11px/1.4 monospace;
+        padding:6px 8px; border:1px solid #0f0; border-radius:4px;
+        margin:0; pointer-events:none; white-space:pre;`;
+    document.body.appendChild(statsEl);
+}
+window.toggleStats = toggleStats;
+
+function updateStats(delta) {
+    if (!statsEl) return;
+    statsTimer += delta;
+    if (statsTimer < 0.25) return;
+    statsTimer = 0;
+    const s = rendererStats();
+    statsEl.textContent =
+        `fps      ${lastFps.toFixed(0)}  (scale ${qualityScale.toFixed(2)})\n` +
+        `draws    ${s.calls}\n` +
+        `tris     ${(s.tris / 1000).toFixed(0)}k\n` +
+        `textures ${s.textures}\n` +
+        `geoms    ${s.geometries}\n` +
+        `pickups  ${s.powerups}/${MAX_POWERUPS}\n` +
+        `police   ${s.enemies}`;
+}
+
 function animate() {
     requestAnimationFrame(animate);
-    
+
     const rawDelta = clock.getDelta();
     const delta = Math.min(rawDelta, 0.05);
+
+    updateAdaptiveQuality(rawDelta);
+    updateStats(delta);
 
     
     // Update Player Animations (Human or Bike)
@@ -1803,30 +2028,40 @@ function animate() {
     }
 
     if (gameActive) {
+        // One opacity write covers every glow on screen.
+        updateGlowPulse(clock.elapsedTime);
+
         for (let i = powerups.length - 1; i >= 0; i--) {
             const p = powerups[i];
-            // ... inside the powerups loop
+            const distToPlayer = playerGroup.position.distanceTo(p.position);
+
+            // Cull pickups the player has left far behind, freeing budget for
+            // fresh ones ahead. Without this the array only ever grew.
+            if (distToPlayer > POWERUP_DESPAWN_DIST) {
+                removePowerup(i);
+                continue;
+            }
+
             if (p.userData.type !== 'bike') {
                 p.rotation.y += delta;
             }
-            if (p.userData.star) {
-                p.userData.star.material.rotation -= delta * 2.5;
+            if (p.userData.glow) {
+                p.userData.glow.position.y =
+                    1.0 + Math.sin(clock.elapsedTime * 1.8 + p.userData.bobPhase) * 0.25;
             }
-            
-            if (p.userData.active && playerGroup.position.distanceTo(p.position) < 2.5) {
+
+            if (p.userData.active && distToPlayer < 2.5) {
                 if (p.userData.type === 'bike') {
                     hasBike = true;
                 } else if (p.userData.type === 'drink') {
                     hasJumpBoost = true;
                 } else if (p.userData.type === 'armor_tee') {
-                    armor += 2; 
+                    armor += 2;
                 } else if (p.userData.type === 'armor_belt') {
-                    armor += 1; 
+                    armor += 1;
                 }
-                
-                scene.remove(p);
-                p.userData.active = false;
-                powerups.splice(i, 1);
+
+                removePowerup(i);
             }
         }
     }
@@ -2171,7 +2406,7 @@ window.addEventListener('resize', () => {
     renderer.setSize(window.innerWidth, window.innerHeight);
     if (composer) composer.setSize(window.innerWidth, window.innerHeight);
     
-    renderer.setPixelRatio(targetPixelRatio());
+    renderer.setPixelRatio(targetPixelRatio() * qualityScale);
     navLineMat.resolution.set(window.innerWidth, window.innerHeight);
 
     // --- NEW: REBUILD JOYSTICK ON RESIZE ---

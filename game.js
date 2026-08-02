@@ -12,11 +12,6 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 // --- PHYSICS ACCELERATION ---
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 
-// --- WIDE LINE (nav route) ---
-import { Line2 }        from 'three/addons/lines/Line2.js';
-import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
-import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
-
 // Silently upgrade Three.js with BVH acceleration
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
@@ -50,63 +45,56 @@ loadingScreen.innerHTML = `
 `;
 document.body.appendChild(loadingScreen);
 
-// --- MAP SELECTION SCREEN SETUP ---
-const mapSelectScreen = document.createElement('div');
-mapSelectScreen.id = 'map-select-screen';
-mapSelectScreen.style.cssText = `
+// --- TITLE SCREEN ---
+// Single zone. Shoreditch is the only map with DATA_ROAD geometry exported, so
+// it's the only one where the nav grid and road spawning actually work; the
+// others fell back to raycasting ground colliders. Keeping the start behind a
+// tap also means the 90MB map download begins on a user gesture rather than on
+// page load.
+const titleScreen = document.createElement('div');
+titleScreen.id = 'title-screen';
+titleScreen.style.cssText = `
     position: fixed; top: 0; left: 0; width: 100%; height: 100%;
     background: linear-gradient(rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.5)), url('menubg.jpg') center/cover no-repeat;
     display: flex; justify-content: center; align-items: center; flex-direction: column;
     z-index: 9998; font-family: 'Helvetica', Arial, sans-serif; color: white;
 `;
 
-mapSelectScreen.innerHTML = `
+titleScreen.innerHTML = `
     <img src="mdrnquestlogo.png" alt="Mdrn Quest Logo" style="width: 85vw; max-width: 400px; margin-bottom: 10px;">
-    
-    <h1 style="font-family: 'Medieval', serif; color: #ffffff; font-size: 35px; text-align: center; margin-bottom: 25px; text-shadow: 2px 2px 5px #000; padding: 0 20px;">SELECT YOUR ZONE</h1>
-    
-    <p1 style="font-family: 'Helvetica', Arial, sans-serif; color: #cccccc; font-size: 16px; text-align: center; margin-bottom: 30px; max-width: 400px; padding: 0 20px;">Choose your starting zone and deliver your packages. All maps are built from real Google Maps data.</p1>
 
-    <div style="display: flex; gap: 15px; flex-wrap: wrap; justify-content: center; padding: 0 10px;">
-        
-        <div class="map-card" data-map="shoreditch.glb" style="cursor: pointer; text-align: center; background: #222; padding: 10px; border-radius: 8px; border: 2px solid #444; transition: 0.2s; width: 40vw; max-width: 200px;">
-            <img src="shoreditch.jpg" alt="Shoreditch" style="width: 100%; height: 20vh; max-height: 130px; object-fit: cover; border-radius: 4px; margin-bottom: 10px;">
-            <div style="font-size: 16px; font-weight: bold;">SHOREDITCH</div>
-        </div>
+    <h1 style="font-family: 'Medieval', serif; color: #ffffff; font-size: 35px; text-align: center; margin-bottom: 20px; text-shadow: 2px 2px 5px #000; padding: 0 20px;">SHOREDITCH</h1>
 
-        <div class="map-card" data-map="archway.glb" style="cursor: pointer; text-align: center; background: #222; padding: 10px; border-radius: 8px; border: 2px solid #444; transition: 0.2s; width: 40vw; max-width: 200px;">
-            <img src="archway.jpg" alt="Archway" style="width: 100%; height: 20vh; max-height: 130px; object-fit: cover; border-radius: 4px; margin-bottom: 10px;">
-            <div style="font-size: 16px; font-weight: bold;">ARCHWAY</div>
-        </div>
+    <p style="font-family: 'Helvetica', Arial, sans-serif; color: #cccccc; font-size: 16px; text-align: center; margin: 0 0 28px; max-width: 400px; padding: 0 20px;">
+        Deliver your packages before the shift ends. Built from real Google Maps data.
+    </p>
 
-        <div class="map-card" data-map="carnabyst.glb" style="cursor: pointer; text-align: center; background: #222; padding: 10px; border-radius: 8px; border: 2px solid #444; transition: 0.2s; width: 40vw; max-width: 200px;">
-            <img src="carnabyst.jpg" alt="Carnaby St" style="width: 100%; height: 20vh; max-height: 130px; object-fit: cover; border-radius: 4px; margin-bottom: 10px;">
-            <div style="font-size: 16px; font-weight: bold;">CARNABY ST</div>
-        </div>
+    <div id="start-card" style="cursor: pointer; text-align: center; background: #222; padding: 10px; border-radius: 8px; border: 2px solid #444; transition: 0.2s; width: 60vw; max-width: 260px;">
+        <img src="shoreditch.jpg" alt="Shoreditch" style="width: 100%; height: 22vh; max-height: 150px; object-fit: cover; border-radius: 4px; margin-bottom: 10px;">
+        <div style="font-size: 18px; font-weight: bold; letter-spacing: 1px;">START SHIFT</div>
+    </div>
 
+    <!-- CC-BY requires attribution wherever the work is distributed. Keep this
+         visible (and keep CREDITS.md) if the knight model stays in the game. -->
+    <div style="position: absolute; bottom: 12px; left: 0; right: 0; text-align: center;
+                font-family: 'Helvetica', Arial, sans-serif; font-size: 11px; line-height: 1.5;
+                color: #9a9a9a; padding: 0 16px;">
+        &ldquo;<a href="https://skfb.ly/ouuWC" target="_blank" rel="noopener" style="color:#c9c9c9;">PS1 PSX Knight</a>&rdquo;
+        by crimsongcat, licensed under
+        <a href="http://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener" style="color:#c9c9c9;">CC BY 4.0</a>
     </div>
 `;
 
-document.body.appendChild(mapSelectScreen);
+document.body.appendChild(titleScreen);
 
-// Add click & hover events to the cards
-document.querySelectorAll('.map-card').forEach(card => {
-    // Hover effects
-    card.addEventListener('mouseenter', () => card.style.borderColor = '#ffffff');
-    card.addEventListener('mouseleave', () => card.style.borderColor = '#444');
-    
-    // Click to start
-    card.addEventListener('click', (e) => {
-        currentMapName = e.currentTarget.getAttribute('data-map');
-        mapSelectScreen.style.display = 'none'; // Hide menu
-        
-        // Reset timers and activate game
-        timeLeft = START_TIME; 
-        gameActive = true; 
-        
-        // Load the chosen map!
-        loadLevel(currentMapName);
-    });
+const startCard = titleScreen.querySelector('#start-card');
+startCard.addEventListener('mouseenter', () => startCard.style.borderColor = '#ffffff');
+startCard.addEventListener('mouseleave', () => startCard.style.borderColor = '#444');
+startCard.addEventListener('click', () => {
+    titleScreen.style.display = 'none';
+    timeLeft = START_TIME;
+    gameActive = true;
+    loadLevel(currentMapName);
 });
 
 // --- GAME LOOP ---
@@ -115,17 +103,14 @@ let cameraAngle = 0;
 const cameraRotationSpeed = 0.03;
 const currentLookAt = new THREE.Vector3(0, 0, 0);
 
-// Define your maps array near the top of the file (with other configs) or right here
-const maps = ['shoreditch.glb', 'archway.glb', 'carnabyst.glb'];
-let currentMapIndex = 0; // Make sure this variable exists in your state variables
-
 let roamingNPCs = []; // civilian roamers
 const NPC_WALK_SPEED = 4.0;
 const MAX_ROAMING_NPCS = 8;
 
-window.switchMap = () => {
+window.returnToMenu = () => {
     gameActive = false; // Pause the game in the background
-    document.getElementById('map-select-screen').style.display = 'flex'; // Show menu
+    isPaused = false;
+    document.getElementById('title-screen').style.display = 'flex';
     if (document.activeElement) document.activeElement.blur();
 };
 
@@ -391,6 +376,7 @@ let currentNavIndex = 0;
 let pathRetryTimer = 0;
 let navLineGroundTimer = 0;
 let navLineUpdateTimer = 0.12; // start at threshold so first frame draws immediately
+let lastTrailWidth = 0;        // forces a rebuild when the map view changes width
 
 // Templates
 let bikeTemplate = null; 
@@ -780,30 +766,149 @@ loader.load('customer.glb', (gltf) => {
     }
 }, undefined, (err) => console.error("Customer Model Error:", err));
 
-// ARROW
-const arrowMesh = new THREE.Mesh(
-    new THREE.ConeGeometry(0.5, 1.5, 8),
-    new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.8 }) 
-);
-arrowMesh.geometry.rotateX(Math.PI / 2);
-arrowMesh.position.y = 6;
-playerGroup.add(arrowMesh);
+// --- NAVIGATION: ENERGY TRAIL ---
+// A ribbon laid along the road route with pulses of light running down it toward
+// the drop-off. Replaces the floating cone and the dashed Line2 route: one
+// element now does both jobs, and it reads as something to follow rather than
+// something to interpret.
 
-// Yellow dashed route line — Line2 so linewidth actually works in WebGL
-const navLineMat = new LineMaterial({
-    color: 0xffff00,
-    linewidth: 5,
-    dashed: true,
-    dashSize: 10,
-    gapSize: 6,
-    dashScale: 1,
-    resolution: new THREE.Vector2(window.innerWidth, window.innerHeight)
+const TRAIL_MAX_POINTS = 512;                 // spine samples; ribbon is 2 verts each
+const TRAIL_WIDTH_GAME = 1.7;                 // half-width in world units, chase cam
+const TRAIL_WIDTH_MAP  = 7.0;                 // wider so it still reads from 200 units up
+const TRAIL_LIFT       = 0.45;                // above the road surface
+
+const trailGeo = new THREE.BufferGeometry();
+const trailPositions = new Float32Array(TRAIL_MAX_POINTS * 2 * 3);
+const trailUVs       = new Float32Array(TRAIL_MAX_POINTS * 2 * 2);
+const trailIndices   = new Uint16Array((TRAIL_MAX_POINTS - 1) * 6);
+for (let i = 0; i < TRAIL_MAX_POINTS - 1; i++) {
+    const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
+    trailIndices.set([a, b, c, b, d, c], i * 6);
+}
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPositions, 3));
+trailGeo.setAttribute('uv', new THREE.BufferAttribute(trailUVs, 2));
+trailGeo.setIndex(new THREE.BufferAttribute(trailIndices, 1));
+trailGeo.setDrawRange(0, 0);
+
+// uv.x carries distance along the route in world units (so pulse spacing and
+// speed stay constant regardless of how the path was sampled); uv.y is 0..1
+// across the ribbon's width.
+const trailMat = new THREE.ShaderMaterial({
+    uniforms: {
+        uTime:        { value: 0 },
+        uTotalLength: { value: 1 },
+        uColorCore:   { value: new THREE.Color(0xdffbff) }, // hot centre
+        uColorEdge:   { value: new THREE.Color(0x18b6ff) }, // electric blue body
+        uOpacity:     { value: 1.0 }
+    },
+    vertexShader: `
+        varying vec2 vUv;
+        void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+    `,
+    fragmentShader: `
+        uniform float uTime;
+        uniform float uTotalLength;
+        uniform vec3  uColorCore;
+        uniform vec3  uColorEdge;
+        uniform float uOpacity;
+        varying vec2  vUv;
+
+        void main() {
+            float across = abs(vUv.y * 2.0 - 1.0);        // 0 at centre, 1 at the edges
+            float edge   = 1.0 - smoothstep(0.30, 1.0, across);
+            float core   = 1.0 - smoothstep(0.0, 0.42, across);
+
+            float d = vUv.x;
+
+            // Pulses travelling toward the destination: a sharp head with a tail
+            // trailing behind it, repeating every ~20 units.
+            float wave  = fract(d * 0.05 - uTime * 0.7);
+            float pulse = pow(wave, 5.0);
+
+            // Always-on base glow so the whole route stays readable between pulses.
+            float intensity = (0.30 + pulse * 0.95) * edge + core * 0.35;
+
+            // Don't blast the camera at the player's feet, and taper into the beacon.
+            float fadeIn  = smoothstep(0.0, 14.0, d);
+            float fadeOut = 1.0 - smoothstep(uTotalLength - 22.0, uTotalLength, d);
+
+            vec3 col = mix(uColorEdge, uColorCore, clamp(core * 0.75 + pulse * 0.6, 0.0, 1.0));
+            float a  = intensity * fadeIn * fadeOut * uOpacity;
+
+            gl_FragColor = vec4(col, a);
+        }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    depthTest: true,      // buildings still occlude it
+    side: THREE.DoubleSide,
+    toneMapped: false
 });
-const navLineGeo = new LineGeometry();
-const navLine = new Line2(navLineGeo, navLineMat);
-navLine.frustumCulled = false;
-navLine.visible = false;
-scene.add(navLine);
+
+const navTrail = new THREE.Mesh(trailGeo, trailMat);
+navTrail.frustumCulled = false;   // spine is rebuilt in place; bounds would be stale
+navTrail.renderOrder = -3;
+navTrail.visible = false;
+scene.add(navTrail);
+
+// Diagnostics. pathPoints === 0 means A* found no road route and the trail is
+// running straight at the beacon through whatever is in the way — that's a
+// pathfinding problem, not a rendering one, and the two look identical in game.
+window.mqTrailInfo = () => ({
+    visible: navTrail.visible,
+    verts: trailGeo.drawRange.count,
+    length: +trailMat.uniforms.uTotalLength.value.toFixed(1),
+    pathPoints: currentNavPath.length,
+    navGrid: navGrid ? 'built' : 'missing'
+});
+
+const TRAIL_UP = new THREE.Vector3(0, 1, 0);
+const _tanA = new THREE.Vector3(), _tanB = new THREE.Vector3(), _side = new THREE.Vector3();
+
+// Rebuilds the ribbon from a polyline. Buffers are preallocated and rewritten in
+// place — this runs several times a second and must not churn the GC.
+function buildTrail(points, halfWidth) {
+    const n = Math.min(points.length, TRAIL_MAX_POINTS);
+    if (n < 2) { navTrail.visible = false; return; }
+
+    let dist = 0;
+    for (let i = 0; i < n; i++) {
+        const p = points[i];
+
+        // Tangent from neighbours so joints stay smooth around corners.
+        if (i > 0) {
+            dist += _tanA.subVectors(p, points[i - 1]).length();
+            _tanA.normalize();
+        }
+        if (i < n - 1) _tanB.subVectors(points[i + 1], p).normalize();
+        const tangent = (i === 0) ? _tanB : (i === n - 1 ? _tanA : _tanA.clone().add(_tanB).normalize());
+
+        _side.crossVectors(TRAIL_UP, tangent);
+        if (_side.lengthSq() < 1e-6) _side.set(1, 0, 0);   // path pointing straight up
+        _side.normalize().multiplyScalar(halfWidth);
+
+        const v = i * 6;
+        trailPositions[v    ] = p.x - _side.x;
+        trailPositions[v + 1] = p.y - _side.y;
+        trailPositions[v + 2] = p.z - _side.z;
+        trailPositions[v + 3] = p.x + _side.x;
+        trailPositions[v + 4] = p.y + _side.y;
+        trailPositions[v + 5] = p.z + _side.z;
+
+        const t = i * 4;
+        trailUVs[t    ] = dist; trailUVs[t + 1] = 0;
+        trailUVs[t + 2] = dist; trailUVs[t + 3] = 1;
+    }
+
+    trailGeo.attributes.position.needsUpdate = true;
+    trailGeo.attributes.uv.needsUpdate = true;
+    trailGeo.setDrawRange(0, (n - 1) * 6);
+    trailMat.uniforms.uTotalLength.value = Math.max(dist, 1);
+}
 
 // --- MAP LOADER FUNCTION ---
 function loadLevel(mapName) {
@@ -935,42 +1040,207 @@ function loadLevel(mapName) {
 
 //loadLevel(currentMapName);
 
-// --- PLAYER LOADER ---
+// --- PLAYER (KNIGHT) + NPC (OLD PLAYER MODEL) ---
+//
+// The knight is the player; playermodel.glb is now only the civilian crowd.
+//
+// Both are Mixamo rigs, but Sketchfab's exporter suffixed every knight bone with
+// an index ("mixamorig:Spine" -> "mixamorig:Spine_13"), so the knight's own file
+// only carries an Idle clip and playermodel's clips don't bind to it as-is.
+// 25 of the knight's 26 bones map onto playermodel's once that suffix is
+// stripped — the 16 it lacks are finger bones, which none of these animations
+// need — so the clips are retargeted here at load rather than in Blender.
 let playerMesh;
 let mixer;
 let animationsMap = new Map();
 let currentAction;
 
-loader.load('playermodel.glb', (gltf) => {
-    playerMesh = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR });
-    playerMesh.scale.set(2.0, 2.0, 2.0);
-    playerMesh.rotation.y = Math.PI;
+let npcTemplate = null;   // playermodel.glb, cloned for the roaming crowd
+let npcClips = null;
 
-    playerMesh.traverse(o => {
+const PLAYER_TARGET_HEIGHT = 4.0;  // world units; old model was 1.99 at scale 2.0
+
+// Strips the "_12" style suffix Sketchfab's FBX->glTF conversion appends.
+const baseBoneName = (n) => n.replace(/_\d+$/, '');
+
+/**
+ * Rebinds clips authored for one skeleton onto another whose bones carry the
+ * same names modulo that numeric suffix. Tracks targeting bones the destination
+ * doesn't have are dropped, which is what keeps the finger curves from spamming
+ * "no target node found" warnings every frame.
+ */
+function retargetClips(clips, targetRoot) {
+    const byBaseName = new Map();
+    targetRoot.traverse(o => {
+        const base = baseBoneName(o.name);
+        if (o.name && !byBaseName.has(base)) byBaseName.set(base, o.name);
+    });
+
+    return clips.map(clip => {
+        const tracks = [];
+        let dropped = 0;
+        for (const track of clip.tracks) {
+            const dot = track.name.lastIndexOf('.');
+            if (dot < 0) continue;
+            const nodeName = track.name.slice(0, dot);
+            const property = track.name.slice(dot);
+
+            const mapped = byBaseName.get(nodeName) || byBaseName.get(baseBoneName(nodeName));
+            if (!mapped) { dropped++; continue; }
+
+            const t = track.clone();
+            t.name = mapped + property;
+            tracks.push(t);
+        }
+        if (dropped) console.log(`retarget "${clip.name}": dropped ${dropped} track(s) with no matching bone`);
+        return new THREE.AnimationClip(clip.name, clip.duration, tracks);
+    });
+}
+
+// The knight and the clips it needs arrive in separate files, in either order.
+let pendingKnight = null;
+function tryBuildPlayer() {
+    if (!pendingKnight || !npcClips) return;
+
+    playerMesh = pendingKnight;
+    pendingKnight = null;
+
+    // Scale from the model's own bounds so swapping in another character
+    // doesn't silently change the player's size relative to collision.
+    const box = new THREE.Box3().setFromObject(playerMesh);
+    const height = Math.max(box.max.y - box.min.y, 0.001);
+    const s = PLAYER_TARGET_HEIGHT / height;
+    playerMesh.scale.setScalar(s);
+    playerMesh.rotation.y = Math.PI;
+    console.log(`Knight height ${height.toFixed(3)} -> scale ${s.toFixed(3)}`);
+
+    playerGroup.add(playerMesh);
+
+    mixer = new THREE.AnimationMixer(playerMesh);
+    for (const clip of retargetClips(npcClips, playerMesh)) {
+        // 'Jumping' is a duplicate of 'Jump' in playermodel.glb; ignore it.
+        if (['Idle', 'Run', 'Jump', 'Punch'].includes(clip.name)) {
+            animationsMap.set(clip.name, mixer.clipAction(clip));
+        }
+    }
+
+    currentAction = animationsMap.get('Idle');
+    if (currentAction) currentAction.play();
+
+    console.log('Player animations:', [...animationsMap.keys()].join(', '));
+}
+
+// Retargeting fails silently — the model just stands frozen in bind pose. Sample
+// a bone twice and compare: if the quaternion never changes, the tracks aren't
+// binding to the skeleton.
+window.mqPlayerInfo = () => {
+    if (!playerMesh) return { ready: false };
+    const bone = findBone(playerMesh, 'mixamorig:LeftForeArm');
+    return {
+        ready: true,
+        scale: +playerMesh.scale.x.toFixed(3),
+        clips: [...animationsMap.keys()],
+        current: currentAction ? currentAction.getClip().name : null,
+        running: currentAction ? currentAction.isRunning() : false,
+        boneQ: bone ? bone.quaternion.toArray().map(v => +v.toFixed(4)) : null,
+        npcs: roamingNPCs.length,
+        teeAttached: !!wornTeeInstance,
+        teeVisible: wornTeeInstance ? wornTeeInstance.visible : false
+    };
+};
+// Test hook: armour normally only changes by collecting a pickup.
+window.mqDebugArmor = (n) => { armor = n; };
+
+loader.load('ps1_psx_knight.glb', (gltf) => {
+    pendingKnight = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR });
+    pendingKnight.traverse(o => {
+        if (o.isMesh && o.material) {
+            o.material.metalness = 0.0;
+            o.material.roughness = 0.9;
+        }
+    });
+    tryBuildPlayer();
+}, undefined, (err) => console.error("Knight Model Error:", err));
+
+// --- WEARABLE T-SHIRT ---
+//
+// The CLO3D garment is a static mesh with no skin weights, so it can't deform
+// with the knight. Instead it's parented to the chest bone: it inherits that
+// bone's motion, which for a boxy tee on a low-poly character reads fine and
+// needs no Blender work. If you later skin the garment to the same Mixamo
+// skeleton, drop that file in as liontee_worn.glb and it will be picked up
+// automatically (see WORN_TEE_FILE below).
+//
+// Poly budget matters here: the raw garment is 1.4M triangles and the optimizer
+// output is 208k, against a 544-triangle knight. For something worn every frame,
+// decimate it to ~1-2k triangles with a 256px texture.
+const WORN_TEE_FILE  = 'liontee_worn.glb';           // optional; falls back to the pickup model
+const WORN_TEE_BONE  = 'mixamorig:Spine2';           // chest; matched ignoring the _NN suffix
+const WORN_TEE_SCALE = 1.0;
+const WORN_TEE_OFFSET = new THREE.Vector3(0, 0, 0);  // tune against the knight's chest
+const WORN_TEE_ROTATION = new THREE.Euler(0, 0, 0);
+
+let wornTeeTemplate = null;  // null -> fall back to lionTeeTemplate
+let wornTeeInstance = null;
+
+loader.load(WORN_TEE_FILE, (gltf) => {
+    wornTeeTemplate = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR, castShadow: false });
+    console.log('Worn tee: using', WORN_TEE_FILE);
+}, undefined, () => {
+    // Absent by design — the pickup model is used instead.
+    console.log(`Worn tee: ${WORN_TEE_FILE} not found, falling back to the pickup model`);
+});
+
+function findBone(root, baseName) {
+    let found = null;
+    root.traverse(o => {
+        if (!found && baseBoneName(o.name) === baseName) found = o;
+    });
+    return found;
+}
+
+// Shows/hides the tee to match armour state. Built lazily on first pickup so we
+// don't pay for it in games where the player never finds one.
+function updateWornTee() {
+    const shouldWear = armor > 0;
+
+    if (shouldWear && !wornTeeInstance && playerMesh) {
+        const source = wornTeeTemplate || lionTeeTemplate;
+        if (!source) return;   // neither loaded yet; try again next frame
+
+        const bone = findBone(playerMesh, WORN_TEE_BONE);
+        if (!bone) {
+            console.warn(`Worn tee: bone "${WORN_TEE_BONE}" not found on the player`);
+            return;
+        }
+
+        wornTeeInstance = SkeletonUtils.clone(source);
+        wornTeeInstance.position.copy(WORN_TEE_OFFSET);
+        wornTeeInstance.rotation.copy(WORN_TEE_ROTATION);
+        // The bone carries the model's scale, so undo it to keep the garment's
+        // size independent of how the character was scaled.
+        const s = WORN_TEE_SCALE / (playerMesh.scale.x || 1);
+        wornTeeInstance.scale.setScalar(s);
+        wornTeeInstance.traverse(o => { if (o.isMesh) o.castShadow = false; });
+        bone.add(wornTeeInstance);
+    }
+
+    if (wornTeeInstance) wornTeeInstance.visible = shouldWear && !hasBike;
+}
+
+loader.load('playermodel.glb', (gltf) => {
+    npcTemplate = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR });
+    npcTemplate.scale.set(2.0, 2.0, 2.0);
+    npcTemplate.traverse(o => {
         if (o.isMesh && o.material) {
             o.material.metalness = 0.0;
             o.material.roughness = 0.8;
             if (o.material.color) o.material.color.set(0xffffff);
         }
     });
-
-    playerGroup.add(playerMesh);
-    
-    mixer = new THREE.AnimationMixer(playerMesh);
-    const clips = gltf.animations;
-
-    const idleClip = THREE.AnimationClip.findByName(clips, 'Idle');
-    const runClip = THREE.AnimationClip.findByName(clips, 'Run');
-    const jumpClip = THREE.AnimationClip.findByName(clips, 'Jump');
-
-    if (idleClip) animationsMap.set('Idle', mixer.clipAction(idleClip));
-    if (runClip) animationsMap.set('Run', mixer.clipAction(runClip));
-    if (jumpClip) animationsMap.set('Jump', mixer.clipAction(jumpClip));
-    
-    currentAction = animationsMap.get('Idle');
-    if (currentAction) currentAction.play();
-
-}, undefined, (err) => console.error("Player Model Error:", err));
+    npcClips = gltf.animations;
+    tryBuildPlayer();   // supplies the player's animation set too
+}, undefined, (err) => console.error("NPC Model Error:", err));
 
 // --- PLAYER BIKE LOADER ---
 loader.load('playerbike.glb', (gltf) => {
@@ -1513,14 +1783,14 @@ function createNewEnemy() {
 }
 
 function spawnRoamingNPC() {
-    if (!playerMesh || roamingNPCs.length >= MAX_ROAMING_NPCS) return;
+    if (!npcTemplate || !npcClips || roamingNPCs.length >= MAX_ROAMING_NPCS) return;
 
     const pos = getAnywhereSpawnPoint(playerGroup.position, 30, 150);
     if (!pos) return;
 
-    // Clone the player model as placeholder
-    const mesh = SkeletonUtils.clone(playerMesh);
-    mesh.scale.set(2.0, 2.0, 2.0);
+    // Civilians are the original player model — cloned from its own template so
+    // they're unaffected by the player being a differently-scaled knight.
+    const mesh = SkeletonUtils.clone(npcTemplate);
     mesh.position.copy(pos);
     // Give them a random tint so they're distinguishable
     mesh.traverse(o => {
@@ -1531,13 +1801,14 @@ function spawnRoamingNPC() {
     });
     scene.add(mesh);
 
-    // Give them their own mixer using the player's clips
+    // NPCs use playermodel's clips directly — same skeleton, no retarget needed.
     const npcMixer = new THREE.AnimationMixer(mesh);
-    const idleClip = THREE.AnimationClip.findByName(mixer._root._clips || [], 'Idle');
-    
-    // Grab clips directly from animationsMap's underlying clips
-    const idleAction = npcMixer.clipAction(animationsMap.get('Idle')._clip);
-    const runAction  = npcMixer.clipAction(animationsMap.get('Run')._clip);
+    const idleClip = THREE.AnimationClip.findByName(npcClips, 'Idle');
+    const runClip  = THREE.AnimationClip.findByName(npcClips, 'Run');
+    if (!idleClip || !runClip) return;
+
+    const idleAction = npcMixer.clipAction(idleClip);
+    const runAction  = npcMixer.clipAction(runClip);
     idleAction.play();
 
     const target = getAnywhereSpawnPoint(pos, 20, 80) || pos.clone();
@@ -1822,14 +2093,20 @@ function updateStats(delta) {
     if (statsTimer < 0.25) return;
     statsTimer = 0;
     const s = rendererStats();
+    // With the composer active (desktop), renderer.info reports only the final
+    // OutputPass quad, not the scene — so draws/tris are meaningless there.
+    const perPass = composer ? ' (last pass)' : '';
     statsEl.textContent =
         `fps      ${lastFps.toFixed(0)}  (scale ${qualityScale.toFixed(2)})\n` +
-        `draws    ${s.calls}\n` +
-        `tris     ${(s.tris / 1000).toFixed(0)}k\n` +
+        `draws    ${s.calls}${perPass}\n` +
+        `tris     ${(s.tris / 1000).toFixed(0)}k${perPass}\n` +
         `textures ${s.textures}\n` +
         `geoms    ${s.geometries}\n` +
         `pickups  ${s.powerups}/${MAX_POWERUPS}\n` +
-        `police   ${s.enemies}`;
+        `police   ${s.enemies}\n` +
+        // 0 route points means A* found nothing and the trail is pointing
+        // straight at the beacon rather than following roads.
+        `route    ${currentNavPath.length} pts${currentNavPath.length ? '' : '  (STRAIGHT LINE)'}`;
 }
 
 function animate() {
@@ -1861,6 +2138,9 @@ function animate() {
     if (isPaused) return;
 
     beaconMesh.material.opacity = 0.5 + Math.sin(clock.elapsedTime * 4) * 0.2;
+
+    // Drives the pulses running along the navigation trail.
+    trailMat.uniforms.uTime.value = clock.elapsedTime;
 
     if (gameActive) {
         if (isTimerRunning) timeLeft -= delta;
@@ -2299,48 +2579,61 @@ function animate() {
                 navLineGroundTimer = Math.max(0, navLineGroundTimer - delta);
             }
 
-            const lineActive = currentNavPath.length > 0 && navLineGroundTimer > 0;
+            // The trail hides briefly while airborne so it doesn't cut through the
+            // camera on big jumps, but always shows a route otherwise.
+            const trailActive = navLineGroundTimer > 0;
+            const trailWidth  = isMapOpen ? TRAIL_WIDTH_MAP : TRAIL_WIDTH_GAME;
 
-            // Cone: only visible when no route line is showing; points straight at beacon
-            arrowMesh.visible = !lineActive;
-            if (!lineActive) {
-                arrowMesh.lookAt(beaconGroup.position.x, 4, beaconGroup.position.z);
-            }
-
-            // Route line — geometry rebuilt at ~8 fps to avoid per-frame Catmull-Rom cost
+            // Rebuilt at ~8fps — the Catmull-Rom resample is too costly per frame,
+            // and the ribbon doesn't visibly lag at this rate.
             navLineUpdateTimer += delta;
-            if (lineActive) {
-                if (navLineUpdateTimer >= 0.12) {
+            if (trailActive) {
+                if (navLineUpdateTimer >= 0.12 || trailWidth !== lastTrailWidth) {
                     navLineUpdateTimer = 0;
-                    const LINE_LIFT = 0.4;
-                    const SKIP_DIST = 12;
+                    lastTrailWidth = trailWidth;
+
+                    const SKIP_DIST = 10;
                     const rawPts = [];
                     const firstWp = currentNavPath[currentNavIndex] || beaconGroup.position;
                     const toFirst = new THREE.Vector3().subVectors(firstWp, playerGroup.position);
                     if (toFirst.length() > SKIP_DIST) {
                         const skipStart = playerGroup.position.clone()
                             .addScaledVector(toFirst.normalize(), SKIP_DIST);
-                        skipStart.y += LINE_LIFT;
+                        skipStart.y += TRAIL_LIFT;
                         rawPts.push(skipStart);
                     }
                     for (let pi = currentNavIndex; pi < currentNavPath.length; pi++) {
                         const wp = currentNavPath[pi].clone();
-                        wp.y += LINE_LIFT;
+                        wp.y += TRAIL_LIFT;
                         rawPts.push(wp);
                     }
+                    // No road path yet (grid still building, or beacon off-road):
+                    // run the trail straight at the beacon rather than falling back
+                    // to a separate arrow widget.
+                    if (rawPts.length < 2) {
+                        const a = playerGroup.position.clone(); a.y += TRAIL_LIFT;
+                        const b = beaconGroup.position.clone(); b.y += TRAIL_LIFT;
+                        if (a.distanceTo(b) > SKIP_DIST) {
+                            a.addScaledVector(b.clone().sub(a).normalize(), SKIP_DIST);
+                            rawPts.length = 0;
+                            rawPts.push(a, b);
+                        }
+                    }
+
                     if (rawPts.length >= 2) {
                         const curve = new THREE.CatmullRomCurve3(rawPts);
-                        const smooth = curve.getPoints(Math.max(rawPts.length * 5, 30));
-                        const flat = [];
-                        for (const p of smooth) flat.push(p.x, p.y, p.z);
-                        navLineGeo.setPositions(flat);
-                        navLine.computeLineDistances();
+                        const smooth = curve.getPoints(
+                            Math.min(Math.max(rawPts.length * 5, 30), TRAIL_MAX_POINTS - 1)
+                        );
+                        buildTrail(smooth, trailWidth);
+                        navTrail.visible = true;
+                    } else {
+                        navTrail.visible = false;
                     }
                 }
-                navLine.visible = true;
             } else {
-                navLine.visible = false;
-                navLineUpdateTimer = 0.12; // force immediate rebuild when line next activates
+                navTrail.visible = false;
+                navLineUpdateTimer = 0.12; // force an immediate rebuild when it returns
             }
             if (playerGroup.position.distanceTo(beaconGroup.position) < 10) { 
                 score++;
@@ -2356,6 +2649,7 @@ function animate() {
         playerMesh.visible = !hasBike;
         playerBikeMesh.visible = hasBike;
     }
+    updateWornTee();
     
     // RENDER — composer on desktop, plain render on iOS
     if (composer) composer.render();
@@ -2371,16 +2665,14 @@ function animate() {
         targetLook = playerGroup.position.clone();
          targetFogNear = 150;
          targetFogFar = 800;
-         beaconGroup.scale.set(4, 4, 4); 
-         arrowMesh.scale.set(4, 4, 4);
+         beaconGroup.scale.set(4, 4, 4);
      } else {
         const offset = new THREE.Vector3(0, 6, -10).applyAxisAngle(new THREE.Vector3(0,1,0), cameraAngle);
          targetPos = playerGroup.position.clone().add(offset);
         targetLook = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 0));
-        targetFogNear = 1500; 
+        targetFogNear = 1500;
          targetFogFar = 3000;
          beaconGroup.scale.set(1, 1, 1);
-         arrowMesh.scale.set(1, 1, 1);
      }
 
     camera.position.lerp(targetPos, 0.1);
@@ -2407,7 +2699,6 @@ window.addEventListener('resize', () => {
     if (composer) composer.setSize(window.innerWidth, window.innerHeight);
     
     renderer.setPixelRatio(targetPixelRatio() * qualityScale);
-    navLineMat.resolution.set(window.innerWidth, window.innerHeight);
 
     // --- NEW: REBUILD JOYSTICK ON RESIZE ---
     if (typeof initJoystick === 'function') {
@@ -2431,6 +2722,4 @@ window.debugSpawn = (forcedType) => {
     createPowerupGroup(forcedType, pos);
 };
 
-// Define your list of maps
-const mapList = ['shoreditch.glb', 'archway.glb', 'carnabyst.glb'];
 

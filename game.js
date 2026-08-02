@@ -1058,10 +1058,28 @@ let currentAction;
 let npcTemplate = null;   // playermodel.glb, cloned for the roaming crowd
 let npcClips = null;
 
-const PLAYER_TARGET_HEIGHT = 4.0;  // world units; old model was 1.99 at scale 2.0
+// Do NOT try to derive this with Box3.setFromObject(). On a skinned mesh that
+// reads bind-space geometry and ignores the bone transforms that actually size
+// the character — for this knight it reports 0.0136 against a true height of
+// 1.76, which scales him to roughly 500 units tall.
+//
+// The reliable measure is the bind-pose skeleton, recovered from the inverse
+// bind matrices:
+//     ps1_psx_knight  1.7623 tall
+//     playermodel     1.9647 tall, rendered at scale 2.0 -> 3.93 units
+// so 3.93 / 1.7623 gives the knight the same on-screen height as the old player.
+const PLAYER_SCALE = 2.23;
 
-// Strips the "_12" style suffix Sketchfab's FBX->glTF conversion appends.
-const baseBoneName = (n) => n.replace(/_\d+$/, '');
+// Normalises a bone name so the same joint matches across our sources:
+//  - Sketchfab's FBX->glTF conversion appends an index ("Spine2" -> "Spine2_11")
+//  - three.js sanitises node names on import and strips ":" and "." characters,
+//    so "mixamorig:Spine2" arrives as "mixamorigSpine2"
+// After this, "mixamorig:Spine2", "mixamorigSpine2" and "mixamorigSpine2_11"
+// all collapse to the same key.
+const baseBoneName = (n) => (n || '')
+    .replace(/_\d+$/, '')
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .toLowerCase();
 
 /**
  * Rebinds clips authored for one skeleton onto another whose bones carry the
@@ -1085,7 +1103,7 @@ function retargetClips(clips, targetRoot) {
             const nodeName = track.name.slice(0, dot);
             const property = track.name.slice(dot);
 
-            const mapped = byBaseName.get(nodeName) || byBaseName.get(baseBoneName(nodeName));
+            const mapped = byBaseName.get(baseBoneName(nodeName));
             if (!mapped) { dropped++; continue; }
 
             const t = track.clone();
@@ -1105,14 +1123,8 @@ function tryBuildPlayer() {
     playerMesh = pendingKnight;
     pendingKnight = null;
 
-    // Scale from the model's own bounds so swapping in another character
-    // doesn't silently change the player's size relative to collision.
-    const box = new THREE.Box3().setFromObject(playerMesh);
-    const height = Math.max(box.max.y - box.min.y, 0.001);
-    const s = PLAYER_TARGET_HEIGHT / height;
-    playerMesh.scale.setScalar(s);
+    playerMesh.scale.setScalar(PLAYER_SCALE);
     playerMesh.rotation.y = Math.PI;
-    console.log(`Knight height ${height.toFixed(3)} -> scale ${s.toFixed(3)}`);
 
     playerGroup.add(playerMesh);
 
@@ -1139,6 +1151,7 @@ window.mqPlayerInfo = () => {
     return {
         ready: true,
         scale: +playerMesh.scale.x.toFixed(3),
+        boneName: bone ? bone.name : null,
         clips: [...animationsMap.keys()],
         current: currentAction ? currentAction.getClip().name : null,
         running: currentAction ? currentAction.isRunning() : false,
@@ -1174,10 +1187,10 @@ loader.load('ps1_psx_knight.glb', (gltf) => {
 // Poly budget matters here: the raw garment is 1.4M triangles and the optimizer
 // output is 208k, against a 544-triangle knight. For something worn every frame,
 // decimate it to ~1-2k triangles with a 256px texture.
-const WORN_TEE_FILE  = 'liontee_worn.glb';           // optional; falls back to the pickup model
-const WORN_TEE_BONE  = 'mixamorig:Spine2';           // chest; matched ignoring the _NN suffix
-const WORN_TEE_SCALE = 1.0;
-const WORN_TEE_OFFSET = new THREE.Vector3(0, 0, 0);  // tune against the knight's chest
+const WORN_TEE_FILE   = 'liontee_worn.glb';          // optional; falls back to the pickup model
+const WORN_TEE_BONE   = 'mixamorig:Spine2';          // chest; matched ignoring the _NN suffix
+const WORN_TEE_HEIGHT = 1.3;                         // world units, ~torso height on a 4-unit character
+const WORN_TEE_OFFSET = new THREE.Vector3(0, 0, 0);  // world units, relative to the chest bone
 const WORN_TEE_ROTATION = new THREE.Euler(0, 0, 0);
 
 let wornTeeTemplate = null;  // null -> fall back to lionTeeTemplate
@@ -1191,10 +1204,11 @@ loader.load(WORN_TEE_FILE, (gltf) => {
     console.log(`Worn tee: ${WORN_TEE_FILE} not found, falling back to the pickup model`);
 });
 
-function findBone(root, baseName) {
+function findBone(root, name) {
+    const want = baseBoneName(name);
     let found = null;
     root.traverse(o => {
-        if (!found && baseBoneName(o.name) === baseName) found = o;
+        if (!found && baseBoneName(o.name) === want) found = o;
     });
     return found;
 }
@@ -1208,21 +1222,60 @@ function updateWornTee() {
         const source = wornTeeTemplate || lionTeeTemplate;
         if (!source) return;   // neither loaded yet; try again next frame
 
-        const bone = findBone(playerMesh, WORN_TEE_BONE);
-        if (!bone) {
-            console.warn(`Worn tee: bone "${WORN_TEE_BONE}" not found on the player`);
-            return;
+        const clone = SkeletonUtils.clone(source);
+        clone.traverse(o => { if (o.isMesh) o.castShadow = false; });
+
+        const garmentSkins = [];
+        clone.traverse(o => { if (o.isSkinnedMesh) garmentSkins.push(o); });
+
+        if (garmentSkins.length) {
+            // Properly rigged garment: rebind it to the player's own skeleton so
+            // it deforms with him. Parenting this to a bone instead would apply
+            // the chest transform on top of the skinning and tear it apart.
+            // Requires the garment to have been weighted against this same
+            // skeleton, so the joint ordering matches.
+            let playerSkin = null;
+            playerMesh.traverse(o => { if (!playerSkin && o.isSkinnedMesh) playerSkin = o; });
+            if (!playerSkin) {
+                console.warn('Worn tee: player has no skinned mesh to bind against');
+                return;
+            }
+            for (const m of garmentSkins) m.bind(playerSkin.skeleton, playerSkin.bindMatrix);
+            playerMesh.add(clone);
+            console.log(`Worn tee: bound ${garmentSkins.length} skinned mesh(es) to the player skeleton`);
+        } else {
+            // Static garment (the CLO3D export): hang it off the chest bone and
+            // fit it by measured height. Box3 is valid here precisely because
+            // there's no skinning involved.
+            const bone = findBone(playerMesh, WORN_TEE_BONE);
+            if (!bone) {
+                console.warn(`Worn tee: bone "${WORN_TEE_BONE}" not found on the player`);
+                return;
+            }
+
+            clone.rotation.copy(WORN_TEE_ROTATION);
+            clone.updateWorldMatrix(false, true);
+            const teeBox = new THREE.Box3().setFromObject(clone);
+            const teeHeight = teeBox.isEmpty() ? 0 : teeBox.max.y - teeBox.min.y;
+
+            bone.updateWorldMatrix(true, false);
+            const boneScale = new THREE.Vector3().setFromMatrixScale(bone.matrixWorld).x || 1;
+
+            // Multiply into the template's authored scale rather than replacing
+            // it, and divide out the bone's inherited scale so WORN_TEE_HEIGHT
+            // and the offset stay expressed in world units.
+            if (teeHeight > 1e-6) {
+                clone.scale.multiplyScalar(WORN_TEE_HEIGHT / (teeHeight * boneScale));
+            }
+            clone.position.copy(WORN_TEE_OFFSET).divideScalar(boneScale);
+            bone.add(clone);
+            console.log(
+                `Worn tee: attached to "${bone.name}", measured ${teeHeight.toFixed(3)}, ` +
+                `bone scale ${boneScale.toFixed(3)} -> local scale ${clone.scale.x.toFixed(4)}`
+            );
         }
 
-        wornTeeInstance = SkeletonUtils.clone(source);
-        wornTeeInstance.position.copy(WORN_TEE_OFFSET);
-        wornTeeInstance.rotation.copy(WORN_TEE_ROTATION);
-        // The bone carries the model's scale, so undo it to keep the garment's
-        // size independent of how the character was scaled.
-        const s = WORN_TEE_SCALE / (playerMesh.scale.x || 1);
-        wornTeeInstance.scale.setScalar(s);
-        wornTeeInstance.traverse(o => { if (o.isMesh) o.castShadow = false; });
-        bone.add(wornTeeInstance);
+        wornTeeInstance = clone;
     }
 
     if (wornTeeInstance) wornTeeInstance.visible = shouldWear && !hasBike;

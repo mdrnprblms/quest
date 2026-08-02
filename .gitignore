@@ -2,3 +2,6 @@
 tools/node_modules/
 optimized/
 *.glb.bak
+
+# Throwaway headless-test harness — a copy of index.html with probes injected
+__perftest.html

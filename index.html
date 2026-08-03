@@ -272,6 +272,42 @@
            sideways is narrow but must never lose it. */
         @media (hover: hover) and (pointer: fine) {
             #controller-overlay { display: none; }
+            /* Exactly the devices that just lost the pad are the ones with no
+               other way of discovering the controls, so the keyboard map is
+               bound to the same query rather than a second, driftable one. */
+            #controls-hint { display: flex !important; }
+        }
+
+        #controls-hint {
+            display: none;
+            /* Kept in the flow, under the start card. Floating it against the
+               bottom edge instead put it straight through the card on a short
+               window — the column is vertically centred, so its height is not
+               something a fixed offset can be chosen against. The title screen
+               scrolls instead (see its overflow-y), which costs nothing on a
+               tall window and degrades gracefully on a short one. */
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 6px 16px;
+            max-width: 460px;
+            margin: 24px 0 8px;
+            padding: 0 20px;
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: -0.05em;
+            text-transform: uppercase;
+            color: #8e8e8e;
+        }
+        #controls-hint b {
+            display: inline-block;
+            min-width: 14px;
+            padding: 2px 5px;
+            margin-right: 2px;
+            border: 1px solid #5a5a5a;
+            border-radius: 3px;
+            color: #e8e8e8;
+            font-weight: 700;
         }
 
         /* --- JOYSTICK ZONE --- */

@@ -58,6 +58,10 @@ titleScreen.style.cssText = `
     background: linear-gradient(rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.5)), url('menubg.jpg') center/cover no-repeat;
     display: flex; justify-content: center; align-items: center; flex-direction: column;
     z-index: 9998; font-family: 'Helvetica', Arial, sans-serif; color: white;
+    /* The column is centred, so on a window shorter than its contents it used
+       to clip equally at both ends and take the logo with it. Scrolling keeps
+       everything reachable now the keyboard map adds a row on desktop. */
+    overflow-y: auto; padding: 24px 0; box-sizing: border-box;
 `;
 
 titleScreen.innerHTML = `
@@ -74,9 +78,27 @@ titleScreen.innerHTML = `
         <div style="font-size: 18px; font-weight: bold; letter-spacing: 1px;">START SHIFT</div>
     </div>
 
+    <!-- Keyboard map. Only shown where the on-screen pad is hidden, i.e. the
+         devices that have no other way of finding out what the controls are.
+         The CSS rule lives in index.html next to the pad's own media query, so
+         the two can never disagree about which devices are which. -->
+    <div id="controls-hint">
+        <span><b>WASD</b> / <b>ARROWS</b> Move</span>
+        <span><b>SPACE</b> Jump</span>
+        <span><b>SHIFT</b> Super jump</span>
+        <span><b>F</b> Punch</span>
+        <span><b>M</b> Map</span>
+        <span><b>P</b> Pause</span>
+        <span><b>DRAG</b> Look</span>
+    </div>
+
     <!-- CC-BY requires attribution wherever the work is distributed. Keep this
-         visible (and keep CREDITS.md) if the knight model stays in the game. -->
-    <div style="position: absolute; bottom: 12px; left: 0; right: 0; text-align: center;
+         visible (and keep CREDITS.md) if the knight model stays in the game.
+         In the flow rather than pinned to the bottom edge: once the screen can
+         scroll, an absolutely positioned line stays welded to the viewport and
+         the content scrolls underneath it. -->
+
+    <div style="margin-top: 14px; text-align: center;
                 font-family: 'Helvetica', Arial, sans-serif; font-size: 11px; line-height: 1.5;
                 color: #9a9a9a; padding: 0 16px;">
         &ldquo;<a href="https://skfb.ly/ouuWC" target="_blank" rel="noopener" style="color:#c9c9c9;">PS1 PSX Knight</a>&rdquo;
@@ -2848,7 +2870,9 @@ function findRoadPath(startPos, endPos) {
                 c = cameFrom[c];
             }
             path.push(endPos.clone());
-            return simplifyNavPath(path);
+            // String-pull first (collapses the grid staircase into straight
+            // runs), then drop anything still collinear after that.
+            return simplifyNavPath(stringPullNavPath(path));
         }
 
         for (const [dx, dz, cost] of dirs) {
@@ -2879,6 +2903,48 @@ function simplifyNavPath(path) {
         const prev = out[out.length - 1], cur = path[i], next = path[i + 1];
         const cross = (cur.x - prev.x) * (next.z - cur.z) - (cur.z - prev.z) * (next.x - cur.x);
         if (Math.abs(cross) > 0.5) out.push(cur);
+    }
+    out.push(path[path.length - 1]);
+    return out;
+}
+
+// Is every point on the straight line a->b still on a road cell?
+// Sampled at half a cell so it cannot step over a one-cell gap.
+function hasRoadLineOfSight(a, b) {
+    if (!navGrid) return false;
+    const dx = b.x - a.x, dz = b.z - a.z;
+    const dist = Math.hypot(dx, dz);
+    const steps = Math.ceil(dist / (NAV_CELL * 0.5));
+    if (steps <= 1) return true;
+    for (let i = 1; i < steps; i++) {
+        const t = i / steps;
+        const c = worldToCell(a.x + dx * t, a.z + dz * t);
+        if (c.gx < 0 || c.gz < 0 || c.gx >= NAV_DIM || c.gz >= NAV_DIM) return false;
+        if (navGrid[c.gz * NAV_DIM + c.gx] === 0) return false;
+    }
+    return true;
+}
+
+// String-pulling. A* on a grid can only step in eight directions, so a route
+// down a road that does not happen to run along an axis comes back as a
+// staircase of 20-unit steps — which is what the traffic was visibly driving,
+// and why the trail wobbled down straight streets. Dropping every waypoint that
+// can be skipped while the straight line stays on road turns that staircase
+// back into the long straight runs the road actually is.
+//
+// Corner points are kept, so junctions still turn properly. Runs once per route
+// build, not per frame.
+function stringPullNavPath(path) {
+    if (!navGrid || path.length <= 2) return path;
+    const out = [path[0]];
+    let anchor = 0;
+    for (let i = 2; i < path.length; i++) {
+        if (!hasRoadLineOfSight(path[anchor], path[i])) {
+            // path[i] is not reachable in a straight line from the anchor, so
+            // the last point that was becomes a corner.
+            out.push(path[i - 1]);
+            anchor = i - 1;
+        }
     }
     out.push(path[path.length - 1]);
     return out;
@@ -3205,11 +3271,24 @@ function updateTraffic(delta) {
 
         car.pos.addScaledVector(to, car.speed * delta);
 
-        // Face along travel, drawn one lane to the right of the centreline so
-        // opposing traffic doesn't share a line.
-        const side = new THREE.Vector3(to.z, 0, -to.x);
+        // Heading is eased toward the direction of travel rather than snapped to
+        // it. Even on a straight route the waypoints are only cell centres, so
+        // setting the yaw from the raw bearing every frame made cars twitch;
+        // easing it also means a junction is taken as a turn instead of an
+        // instant rotation. Shortest-way-round, so 179 -> -179 does not spin.
+        const targetYaw = Math.atan2(to.x, to.z);
+        if (car.yaw === undefined) car.yaw = targetYaw;
+        let dYaw = targetYaw - car.yaw;
+        while (dYaw >  Math.PI) dYaw -= Math.PI * 2;
+        while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+        car.yaw += dYaw * Math.min(1, delta * 6);
+
+        // Drawn one lane to the right of the centreline so opposing traffic
+        // doesn't share a line. Taken from the eased heading, not the raw one,
+        // or the offset itself snaps sideways at every corner.
+        const side = new THREE.Vector3(Math.cos(car.yaw), 0, -Math.sin(car.yaw));
         car.mesh.position.copy(car.pos).addScaledVector(side, car.lane);
-        car.mesh.rotation.set(0, Math.atan2(to.x, to.z) + car.yawFix, 0);
+        car.mesh.rotation.set(0, car.yaw + car.yawFix, 0);
 
         // Sit on the surface the same way the player and NPCs do. The nav grid
         // only stores one height per 20-unit cell, so riding those values alone
@@ -3647,6 +3726,10 @@ window.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowLeft')  { e.preventDefault(); keys.a = true; }
     if (e.key === 'ArrowRight') { e.preventDefault(); keys.d = true; }
     if (k === 'f' || k === 'e') keys.punch = true;   // Circle on the pad
+    // Square on the pad. It had no keyboard equivalent at all, which only
+    // stopped mattering when the pad was on screen for everyone — with it
+    // hidden on desktop the super jump was unreachable there.
+    if (k === 'shift') keys.superJump = true;
     if (k === 'p') isPaused = !isPaused;
     if (k === 'm') isMapOpen = !isMapOpen;
     if (k === 't') { isTimerRunning = !isTimerRunning; }
@@ -3656,6 +3739,7 @@ window.addEventListener('keyup', (e) => {
     const k = e.key.toLowerCase();
     if (keys.hasOwnProperty(k)) keys[k] = false;
     if (k === 'f' || k === 'e') keys.punch = false;
+    if (k === 'shift') keys.superJump = false;
     if (k === ' ') {
         keys.space = false;
         jumpLocked = false;
@@ -4305,6 +4389,27 @@ function animate() {
                         const smooth = curve.getPoints(
                             Math.min(Math.max(rawPts.length * 5, 30), TRAIL_MAX_POINTS - 1)
                         );
+
+                        // Re-plant every sample on the actual road surface. The
+                        // waypoints only carry navHeightGrid's one height per
+                        // 20-unit cell, and the curve between two of them is a
+                        // straight line in Y — so over any crest the ribbon cut
+                        // below the tarmac, which is why it kept disappearing
+                        // into the ground. String-pulled routes have longer
+                        // straights and would have made that worse.
+                        const surfaces = groundMeshes.length > 0 ? groundMeshes : colliderMeshes;
+                        if (surfaces.length) {
+                            for (const p of smooth) {
+                                raycaster.set(new THREE.Vector3(p.x, p.y + 5, p.z), downVector);
+                                const hit = raycaster.intersectObjects(surfaces, false);
+                                // Ignore anything more than a storey down: that is
+                                // a hole in the photogrammetry, not the street.
+                                if (hit.length && hit[0].distance < 14) {
+                                    p.y = hit[0].point.y + TRAIL_LIFT;
+                                }
+                            }
+                        }
+
                         buildTrail(smooth, trailWidth);
                         navTrail.visible = true;
                     } else {

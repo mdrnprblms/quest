@@ -2449,7 +2449,7 @@ for (const type of GARMENT_TYPES) loadGarment(type);
  * hierarchy, because a SkinnedMesh is still positioned by its own world matrix
  * and the bind matrix we borrow belongs to the host.
  */
-function attachGarment(host, template) {
+function attachGarment(host, template, key) {
     if (!host || !template) return null;
 
     let hostSkin = null;
@@ -2458,14 +2458,21 @@ function attachGarment(host, template) {
 
     // bikeRider is a SkeletonUtils.clone of playerMesh, so if the player was
     // already dressed when the bike finished loading, the clone arrives wearing
-    // a copy of the garment. Drop those before counting what is underneath, or
-    // the bike rider ends up in two shirts and the bare meshes never show again.
+    // a copy of the garment, bound to the wrong skeleton. Those get dropped and
+    // replaced by a properly bound one.
+    //
+    // ONLY the same garment, though. Stripping every garment here is what made
+    // the player vanish: attaching the belt deleted the shirt that had been
+    // attached moments earlier, leaving the rig holding meshes that were no
+    // longer in the scene, while hidesBase still took the bare knight away.
     const stale = [];
-    host.traverse(o => { if (o.isSkinnedMesh && o.userData.isGarment) stale.push(o); });
+    host.traverse(o => { if (o.isSkinnedMesh && o.userData.garmentKey === key) stale.push(o); });
     for (const m of stale) if (m.parent) m.parent.remove(m);
 
+    // Anything already wearing a garment key belongs to another garment, not to
+    // the body underneath.
     const base = [];
-    host.traverse(o => { if (o.isSkinnedMesh) base.push(o); });
+    host.traverse(o => { if (o.isSkinnedMesh && !o.userData.garmentKey) base.push(o); });
 
     const clone = SkeletonUtils.clone(template);
     const garment = [];
@@ -2475,7 +2482,7 @@ function attachGarment(host, template) {
     for (const m of garment) {
         m.bind(hostSkin.skeleton, hostSkin.bindMatrix);
         m.castShadow = false;
-        m.userData.isGarment = true;
+        m.userData.garmentKey = key;
         m.position.copy(hostSkin.position);
         m.quaternion.copy(hostSkin.quaternion);
         m.scale.copy(hostSkin.scale);
@@ -2493,8 +2500,10 @@ function dressRig(rig, host) {
     for (const type of GARMENT_TYPES) {
         if (!type.template) continue;
         if (rig && rig.garments[type.key]) continue;
-        const attached = attachGarment(host, type.template);
+        const attached = attachGarment(host, type.template, type.key);
         if (!attached) continue;
+        // Captured from whichever garment attaches first; both see the same
+        // bare meshes, since garments are excluded from the base list.
         if (!rig) rig = { base: attached.base, garments: {} };
         rig.garments[type.key] = attached.garment;
         console.log(`Garment "${type.key}": ${attached.garment.length} mesh(es) on ${host.name || 'host'} skeleton`);

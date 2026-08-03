@@ -251,7 +251,7 @@ let joystickManager;
 function initJoystick() {
     const zone = document.getElementById('zone_joystick');
     if (typeof nipplejs !== 'undefined' && zone) {
-        
+
         // 1. Destroy the old joystick if we are resizing the window
         if (joystickManager) {
             joystickManager.destroy();
@@ -259,6 +259,16 @@ function initJoystick() {
 
         // 2. Measure the new, correctly scaled size of the CSS container
         const dynamicSize = zone.getBoundingClientRect().width;
+
+        // The pad is display:none on any device with a fine pointer, which
+        // measures zero. Building a zero-size nipple on top of that would put an
+        // invisible touch target at the top-left corner of the page.
+        if (dynamicSize < 1) {
+            joystickManager = null;
+            joystickInput.x = 0;
+            joystickInput.y = 0;
+            return;
+        }
 
         // 3. Rebuild the joystick with the fresh dimensions
         joystickManager = nipplejs.create({

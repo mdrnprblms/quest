@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js'; 
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 
 // --- POST-PROCESSING IMPORTS ---
@@ -505,7 +506,13 @@ function updateUI() {
 // --- 2. SCENE ---
 const scene = new THREE.Scene();
 
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 3000);
+// Near plane deliberately not 0.1. Depth precision is dominated by the near
+// plane, so 0.1/3000 (a 30,000:1 ratio) leaves almost none at street distance
+// and coplanar road/pavement surfaces z-fight — which reads as the road
+// cracking into segments. It only showed on mobile because those GPUs have
+// less depth precision to spare. The chase camera sits 10 units back and 6 up,
+// so nothing gets clipped by moving this out to 1.0.
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1.0, 3000);
 camera.position.set(0, 20, 20); 
 
 const renderer = new THREE.WebGLRenderer({ antialias: !isIOS, powerPreference: 'high-performance' });
@@ -535,18 +542,21 @@ renderer.domElement.addEventListener('webglcontextlost', (e) => {
 // iOS Safari kills the tab somewhere north of ~300-400MB, so every texture is
 // downsampled on the CPU before it is ever uploaded.
 //
-// The city is death by a thousand tiles, not a few big textures: shoreditch has
-// 813 images averaging ~512px, which is ~590MB however you cap the outliers. The
-// only lever that moves that number is capping ALL of them, hence the low world
-// cap on iOS. Measured totals for a full shoreditch session:
-//     uncapped              1.09 GB   (tab is killed)
-//     world 512 / char 1024   755 MB  (fine on desktop, still fatal on iOS)
-//     world 128 / char 512     ~95 MB (iOS target)
-// Raise TEX_CAP_WORLD if you want sharper facades and can afford the memory.
-// The better fix is tools/optimize-assets.mjs, which bakes the resize into the
-// .glb — that cuts download size and decode time too, not just GPU memory, and
-// lets this runtime cap be relaxed.
-const TEX_CAP_WORLD = isIOS ? 128 : 512;   // city tiles — hundreds of them
+// These caps only apply to UNCOMPRESSED textures. The city now ships as
+// KTX2/ETC1S and is skipped entirely by optimizeMaterial(), which is why the
+// world cap is no longer punishing.
+//
+// History, so nobody re-introduces the mistake: the city is death by a thousand
+// tiles, not a few big textures — shoreditch has 813 images averaging ~512px,
+// about 590MB as RGBA8 however you cap the outliers. Capping every tile to
+// 128px was the only way to fit iOS's budget, and it gave ~1 texel per world
+// unit, which is why buildings rendered as flat colour. Measured:
+//     uncapped, uncompressed        1.09 GB   (tab is killed)
+//     world 512 / char 1024, uncomp   755 MB  (fine on desktop, fatal on iOS)
+//     world 128 / char 512, uncomp     ~95 MB (fit, but looked dreadful)
+//     KTX2/ETC1S at full resolution    ~76 MB (fits AND looks right)
+// Compression, not resolution, was the right lever.
+const TEX_CAP_WORLD = isIOS ? 512 : 1024;  // fallback for any uncompressed city tile
 const TEX_CAP_CHAR  = isIOS ? 512 : 1024;  // characters, pickups, props
 
 // Keyed on the source image so textures sharing a bitmap are only resized once.
@@ -576,6 +586,15 @@ function optimizeMaterial(mat, cap) {
     for (const key in mat) {
         const value = mat[key];
         if (!value || !value.isTexture || !value.image) continue;
+
+        // Compressed (KTX2/ETC1S) textures have no canvas-drawable image and are
+        // already inside budget — leave them alone. Trying to redraw one through
+        // a 2D canvas would either throw or silently blank the texture.
+        if (value.isCompressedTexture) {
+            value.anisotropy = isIOS ? 1 : 4;
+            continue;
+        }
+
         const smaller = downscaleImage(value.image, cap);
         if (smaller) {
             value.image = smaller;
@@ -622,7 +641,7 @@ window.mqStats = rendererStats;
 // 813 tiny tiles and 3 4096px PNGs look similar by count and differ 100x in bytes.
 function textureBytes() {
     const seen = new Set();
-    let bytes = 0, count = 0, largest = 0;
+    let bytes = 0, count = 0, compressed = 0, largest = 0;
     scene.traverse(o => {
         if (!o.isMesh && !o.isSprite) return;
         const mats = Array.isArray(o.material) ? o.material : [o.material];
@@ -633,13 +652,22 @@ function textureBytes() {
                 if (!t || !t.isTexture || !t.image || seen.has(t)) continue;
                 seen.add(t);
                 const w = t.image.width || 0, h = t.image.height || 0;
-                bytes += w * h * 4 * 1.33; // RGBA8 + mip chain
+                // Compressed textures stay compressed on the GPU. Counting them
+                // as RGBA8 would over-report by ~8x and look like a crisis.
+                // ETC1S/ASTC 4x4 is 1 byte/texel; x1.33 for the mip chain.
+                bytes += t.isCompressedTexture ? w * h * 1.33 : w * h * 4 * 1.33;
+                if (t.isCompressedTexture) compressed++;
                 largest = Math.max(largest, w, h);
                 count++;
             }
         }
     });
-    return { megabytes: +(bytes / 1048576).toFixed(1), textures: count, largestPx: largest };
+    return {
+        megabytes: +(bytes / 1048576).toFixed(1),
+        textures: count,
+        compressed,
+        largestPx: largest
+    };
 }
 window.mqTextureBytes = textureBytes;
 
@@ -666,11 +694,24 @@ const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
 // Note: We will attach this to the main loader below
 
+// --- KTX2 LOADER SETUP ---
+// The city ships as KTX2/ETC1S. Unlike PNG/JPEG/WebP — which all decode to
+// RGBA8 at 5.3 bytes/texel once uploaded — these stay compressed on the GPU at
+// roughly 0.67 bytes/texel, transcoded to ASTC on iOS and BC7/DXT on desktop.
+// That is what lets the map run at its authored resolution instead of the 128px
+// cap that turned buildings into flat colour.
+const ktx2Loader = new KTX2Loader();
+ktx2Loader.setTranscoderPath('https://unpkg.com/three@0.160.0/examples/jsm/libs/basis/');
+ktx2Loader.detectSupport(renderer);
+
 // --- 3. LIGHTING ---
-const hemiLight = new THREE.HemisphereLight(0x333366, 0x404040, 2.5);
+// These now only light characters, pickups and police — the city is unlit (see
+// toUnlitCityMaterial). The old values totalled 4.0 units of flat ambient,
+// which existed to lift the photogrammetry and washed everything out with it.
+const hemiLight = new THREE.HemisphereLight(0x8899bb, 0x404040, 1.0);
 scene.add(hemiLight);
 
-const ambientLight = new THREE.AmbientLight(0xccccff, 1.5); 
+const ambientLight = new THREE.AmbientLight(0xccccff, 0.5);
 scene.add(ambientLight);
 
 const dirLight = new THREE.DirectionalLight(0xaaccff, 1.2);
@@ -717,7 +758,8 @@ initEnvironment();
 
 // --- 4. ASSETS ---
 const loader = new GLTFLoader();
-loader.setDRACOLoader(dracoLoader); // <--- Add this line
+loader.setDRACOLoader(dracoLoader);
+loader.setKTX2Loader(ktx2Loader);
 
 const cityGroup = new THREE.Group();
 scene.add(cityGroup);
@@ -910,6 +952,29 @@ function buildTrail(points, halfWidth) {
     trailMat.uniforms.uTotalLength.value = Math.max(dist, 1);
 }
 
+// Swaps a city tile's lit material for an unlit one carrying the same texture.
+// Disposes the old material but NOT its textures — those are handed straight to
+// the replacement.
+function toUnlitCityMaterial(src) {
+    const mats = Array.isArray(src) ? src : [src];
+    const out = mats.map(m => {
+        if (!m || m.isMeshBasicMaterial) return m;
+        const basic = new THREE.MeshBasicMaterial({
+            map: m.map || null,
+            color: m.color ? m.color.clone() : undefined,
+            vertexColors: m.vertexColors,
+            transparent: m.transparent,
+            opacity: m.opacity,
+            alphaTest: m.alphaTest,
+            side: THREE.DoubleSide,   // photogrammetry has inconsistent winding
+            fog: true
+        });
+        m.dispose();
+        return basic;
+    });
+    return Array.isArray(src) ? out : out[0];
+}
+
 // --- MAP LOADER FUNCTION ---
 function loadLevel(mapName) {
     console.log("Loading Map:", mapName);
@@ -983,11 +1048,16 @@ function loadLevel(mapName) {
 
                     colliderMeshes.push(child); // Buildings / Ground
                     if (child.material) {
-                        child.material.roughness = 0.9;
-                        child.material.metalness = 0.1;
-                        child.material.side = THREE.DoubleSide;
-                        // Downsample this tile's texture before it reaches the GPU.
-                        // Uncapped, these 500-800 tiles are 380-573MB on their own.
+                        // Photogrammetry already has sunlight and shadow baked
+                        // into its textures, so lighting it again is wrong: the
+                        // 4.0 units of flat ambient/hemisphere fill in every
+                        // baked shadow. The source tiles average 29% grey and
+                        // were rendering near-white. Unlit restores the contrast
+                        // that is already in the data, and skips lighting maths
+                        // across 1.8M triangles.
+                        child.material = toUnlitCityMaterial(child.material);
+                        // Downsample any uncompressed tile before it reaches the
+                        // GPU. KTX2 tiles are skipped — they are already small.
                         optimizeMaterial(child.material, TEX_CAP_WORLD);
                     }
 
@@ -1225,6 +1295,7 @@ function updateWornTee() {
         const clone = SkeletonUtils.clone(source);
         clone.traverse(o => { if (o.isMesh) o.castShadow = false; });
 
+        let attached = clone;   // the static branch wraps it in a pivot
         const garmentSkins = [];
         clone.traverse(o => { if (o.isSkinnedMesh) garmentSkins.push(o); });
 
@@ -1257,25 +1328,37 @@ function updateWornTee() {
             clone.updateWorldMatrix(false, true);
             const teeBox = new THREE.Box3().setFromObject(clone);
             const teeHeight = teeBox.isEmpty() ? 0 : teeBox.max.y - teeBox.min.y;
+            const teeCentre = teeBox.getCenter(new THREE.Vector3());
 
             bone.updateWorldMatrix(true, false);
             const boneScale = new THREE.Vector3().setFromMatrixScale(bone.matrixWorld).x || 1;
 
-            // Multiply into the template's authored scale rather than replacing
-            // it, and divide out the bone's inherited scale so WORN_TEE_HEIGHT
-            // and the offset stay expressed in world units.
+            // The garment's geometry does not sit on its own origin — this one
+            // starts at minY 0.967, i.e. a whole unit above it — so attaching it
+            // to the bone directly leaves it hovering. Wrap it in a pivot whose
+            // origin is the measured centre of the mesh, so any garment sits
+            // where its geometry actually is rather than where its origin is.
+            const pivot = new THREE.Group();
+            clone.position.sub(teeCentre);
+            pivot.add(clone);
+
+            // Scale on the pivot (about the geometry centre), dividing out the
+            // bone's inherited scale so WORN_TEE_HEIGHT and the offset stay in
+            // world units.
             if (teeHeight > 1e-6) {
-                clone.scale.multiplyScalar(WORN_TEE_HEIGHT / (teeHeight * boneScale));
+                pivot.scale.setScalar(WORN_TEE_HEIGHT / (teeHeight * boneScale));
             }
-            clone.position.copy(WORN_TEE_OFFSET).divideScalar(boneScale);
-            bone.add(clone);
+            pivot.position.copy(WORN_TEE_OFFSET).divideScalar(boneScale);
+            bone.add(pivot);
+            attached = pivot;
             console.log(
-                `Worn tee: attached to "${bone.name}", measured ${teeHeight.toFixed(3)}, ` +
-                `bone scale ${boneScale.toFixed(3)} -> local scale ${clone.scale.x.toFixed(4)}`
+                `Worn tee: attached to "${bone.name}", measured height ${teeHeight.toFixed(3)}, ` +
+                `centre offset ${teeCentre.y.toFixed(3)}, bone scale ${boneScale.toFixed(3)} ` +
+                `-> pivot scale ${pivot.scale.x.toFixed(4)}`
             );
         }
 
-        wornTeeInstance = clone;
+        wornTeeInstance = attached;
     }
 
     if (wornTeeInstance) wornTeeInstance.visible = shouldWear && !hasBike;

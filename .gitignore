@@ -5,3 +5,7 @@ optimized/
 
 # Throwaway headless-test harness — a copy of index.html with probes injected
 __perftest.html
+
+# Drop screenshots here rather than the repo root — keeps them out of commits
+# and out of the deployed Pages site.
+screenshots/

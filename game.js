@@ -845,17 +845,19 @@ window.mqTextureBytes = textureBytes;
 // afford to run on iOS, where previously there was no post at all.
 const GradeShader = {
     uniforms: {
-        tDiffuse:    { value: null },
-        uExposure:   { value: 1.06 },
-        uContrast:   { value: 1.14 },
-        uSaturation: { value: 1.16 },
-        uShadowTint: { value: new THREE.Vector3(0.90, 0.96, 1.10) },
-        uHighTint:   { value: new THREE.Vector3(1.06, 1.01, 0.94) },
-        uVignette:   { value: 0.38 },
-        uGrain:      { value: 0.030 },
-        uGlare:      { value: 0.22 },
-        uAberration: { value: 0.55 },
-        uTime:       { value: 0 }
+        tDiffuse:     { value: null },
+        uExposure:    { value: 1.06 },
+        uContrast:    { value: 1.14 },
+        uSaturation:  { value: 1.16 },
+        uWhiteBalance:{ value: new THREE.Vector3(1, 1, 1) },
+        uShadowTint:  { value: new THREE.Vector3(0.88, 1.00, 0.96) },
+        uHighTint:    { value: new THREE.Vector3(1.05, 1.01, 0.92) },
+        uLift:        { value: new THREE.Vector3(0, 0, 0) },
+        uVignette:    { value: 0.38 },
+        uGrain:       { value: 0.030 },
+        uGlare:       { value: 0.22 },
+        uAberration:  { value: 0.55 },
+        uTime:        { value: 0 }
     },
 
     vertexShader: /* glsl */`
@@ -870,7 +872,7 @@ const GradeShader = {
         uniform sampler2D tDiffuse;
         uniform float uExposure, uContrast, uSaturation;
         uniform float uVignette, uGrain, uGlare, uAberration, uTime;
-        uniform vec3  uShadowTint, uHighTint;
+        uniform vec3  uWhiteBalance, uShadowTint, uHighTint, uLift;
         varying vec2 vUv;
 
         const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
@@ -916,16 +918,24 @@ const GradeShader = {
                 color += uGlare * max(g * 0.25 - 0.72, 0.0);
             #endif
 
-            color = aces(color * uExposure);
+            // White balance goes in BEFORE the tone curve, where it behaves like
+            // a filter screwed onto the lens rather than a tint painted over the
+            // finished frame — it corrects the cast instead of covering it.
+            color = aces(color * uWhiteBalance * uExposure);
 
             float l = dot(color, LUMA);
             color = mix(vec3(l), color, uSaturation);
             color = clamp((color - 0.5) * uContrast + 0.5, 0.0, 1.0);
 
-            // Shadows toward sky-blue, highlights toward sunlight. Separating
-            // the two ends of the range is most of what makes a graded frame
-            // look like it was shot rather than rendered.
+            // Split tone: shadows one way, highlights the other. Separating the
+            // two ends of the range is most of what makes a graded frame look
+            // like it was shot rather than rendered.
             color *= mix(uShadowTint, uHighTint, smoothstep(0.0, 0.85, l));
+
+            // Lifted blacks. Film never reaches zero — the shadows sit on a
+            // faint colour floor, and that floor is where the green in a cine
+            // stock is most obvious.
+            color += uLift * (1.0 - smoothstep(0.0, 0.55, l));
 
             color *= 1.0 - uVignette * smoothstep(0.22, 0.78, r);
 
@@ -970,6 +980,26 @@ try {
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
 }
 
+// Pushes a look's grade block into the shader. Scalars and vec3s are described
+// the same way in the LOOKS table, so this walks the uniforms rather than
+// listing them twice.
+const GRADE_KEYS = {
+    exposure: 'uExposure', contrast: 'uContrast', saturation: 'uSaturation',
+    whiteBalance: 'uWhiteBalance', shadowTint: 'uShadowTint', highTint: 'uHighTint',
+    lift: 'uLift', vignette: 'uVignette', grain: 'uGrain', glare: 'uGlare',
+    aberration: 'uAberration'
+};
+function applyGrade(grade) {
+    if (!gradePass) return;
+    for (const key in GRADE_KEYS) {
+        const v = grade[key];
+        if (v === undefined) continue;
+        const u = gradePass.uniforms[GRADE_KEYS[key]];
+        if (Array.isArray(v)) u.value.set(v[0], v[1], v[2]);
+        else u.value = v;
+    }
+}
+
 // --- DRACO LOADER SETUP (For your compressed Archway map) ---
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
@@ -985,24 +1015,81 @@ const ktx2Loader = new KTX2Loader();
 ktx2Loader.setTranscoderPath('https://unpkg.com/three@0.160.0/examples/jsm/libs/basis/');
 ktx2Loader.detectSupport(renderer);
 
-// --- 3. LIGHTING ---
-// These only light characters, pickups, cars and police — the city is unlit
-// (see toUnlitCityMaterial), so nothing here touches the 1.8M city triangles.
+// --- 3. LOOK: LIGHTING, SKY AND GRADE ---------------------------------------
+// Everything that defines a time of day lives in one table, because these
+// values only work as a set: the sky, the tint multiplied into the unlit city,
+// the fog, the lamps and the film grade all have to agree or it reads as a
+// filter laid over a daylight photo.
 //
-// The old rig was one steep, near-white key from (50, 200, 50) plus 1.5 units
-// of blue fill. Light coming from directly overhead puts the same value on
-// every surface that faces up and leaves no gradient across a face, which is
-// exactly what "flat" looks like on a character. This one is a three-point
-// setup in miniature: a warm key low enough to model form, a cool sky fill to
-// keep the shadow side alive rather than black, and almost no flat ambient.
+// The city is unlit MeshBasicMaterial, so no light in this scene touches it —
+// the ONLY way to take the photogrammetry to night is `cityTint`, which is
+// multiplied straight into its albedo. That is also the cheapest possible way:
+// no shader work, no extra pass, one colour per material.
+//
+// Live-tune any of this from the console with mqLook({ exposure: 1.4 }) and
+// print the current numbers with mqLookDump() — see the bottom of this block.
+const LOOKS = {
+    night: {
+        sky: 'night',
+        // Not black. A city at night is lit by its own sodium and LED spill,
+        // and the sky sits nearer blue-hour than midnight — that keeps the
+        // photogrammetry readable instead of a grey smear.
+        cityTint: 0x7c8aa4,
+        fog: 0x121b28, fogNear: 300, fogFar: 2000, mapFogNear: 240, mapFogFar: 1400,
+        key:     { color: 0xaac4ff, intensity: 1.5 },    // moonlight
+        fill:    { color: 0xff9b52, intensity: 0.75 },   // sodium bounce off the street
+        hemi:    { sky: 0x2b3b58, ground: 0x191410, intensity: 0.55 },
+        ambient: { color: 0x33425e, intensity: 0.30 },
+        // Moon direction, matched to where the moon is drawn in the sky texture.
+        keyDir: new THREE.Vector3(0.465, 0.77, 0.437),
+        grade: {
+            exposure: 1.45, contrast: 1.10, saturation: 1.00,
+            // Pull green through the whole frame and hold red/blue back. This is
+            // what kills the magenta cast in the source photogrammetry, and it
+            // does it before tone mapping, where it behaves like a filter on the
+            // lens rather than a tint painted over the result.
+            whiteBalance: [0.945, 1.030, 0.980],
+            shadowTint:   [0.82, 1.00, 0.93],   // green-teal shadows
+            highTint:     [1.06, 1.01, 0.88],   // warm street-lamp highlights
+            lift:         [0.010, 0.022, 0.016], // faded green blacks
+            vignette: 0.44, grain: 0.045, glare: 0.30
+        }
+    },
+    day: {
+        sky: 'texture',
+        cityTint: 0xffffff,
+        fog: 0xb9c9d8, fogNear: 320, fogFar: 2300, mapFogNear: 260, mapFogFar: 1500,
+        key:     { color: 0xfff0d6, intensity: 2.6 },
+        fill:    { color: 0xffd9b0, intensity: 0.0 },
+        hemi:    { sky: 0xbcd6ff, ground: 0x5a5348, intensity: 0.55 },
+        ambient: { color: 0xdfe9ff, intensity: 0.10 },
+        keyDir: new THREE.Vector3(120, 130, 70).normalize(),
+        grade: {
+            exposure: 1.06, contrast: 1.14, saturation: 1.08,
+            whiteBalance: [0.965, 1.020, 0.995],
+            shadowTint:   [0.88, 1.00, 0.96],
+            highTint:     [1.05, 1.01, 0.92],
+            lift:         [0.004, 0.010, 0.007],
+            vignette: 0.38, grain: 0.030, glare: 0.22
+        }
+    }
+};
+
+let currentLook = LOOKS.night;
+
+// These only light characters, pickups, cars and police. Values are set by
+// applyLook below; the constructor arguments are just placeholders.
 const hemiLight = new THREE.HemisphereLight(0xbcd6ff, 0x5a5348, 0.55);
 scene.add(hemiLight);
 
 const ambientLight = new THREE.AmbientLight(0xdfe9ff, 0.10);
 scene.add(ambientLight);
 
+// Key. A low side light models form across a face; the old rig fired straight
+// down from (50, 200, 50), which puts one flat value on everything facing up
+// and is exactly what made characters look pasted-on.
 const dirLight = new THREE.DirectionalLight(0xfff0d6, 2.6);
-dirLight.position.set(120, 130, 70);   // ~38° elevation: side light, not top light
+dirLight.position.set(120, 130, 70);
 dirLight.castShadow = renderer.shadowMap.enabled;
 dirLight.shadow.mapSize.width = isIOS ? 512 : 1024;
 dirLight.shadow.mapSize.height = isIOS ? 512 : 1024;
@@ -1022,48 +1109,187 @@ dirLight.shadow.camera.far = 420;
 scene.add(dirLight);
 scene.add(dirLight.target);
 
-// Sun offset from the player, preserved from the authored direction above.
-const SUN_OFFSET = dirLight.position.clone().normalize().multiplyScalar(220);
+// Second, dimmer lamp from the opposite low angle. At night this is the sodium
+// spill coming back up off the street, which is what stops the shadow side of
+// the knight going to flat black — the single most useful light in a night rig
+// after the key itself.
+const fillLight = new THREE.DirectionalLight(0xff9b52, 0.0);
+scene.add(fillLight);
+scene.add(fillLight.target);
 
-// Keeps the shadow frustum centred on the player. Cheap: two vector copies and
-// one matrix update per frame.
+// Key offset from the player. Rebuilt by applyLook when the direction changes.
+let SUN_OFFSET = dirLight.position.clone().normalize().multiplyScalar(220);
+let FILL_OFFSET = new THREE.Vector3();
+
+// Keeps the shadow frustum centred on the player. Cheap: a few vector copies
+// and two matrix updates per frame.
 function updateSunRig(focus) {
     if (!focus) return;
     dirLight.target.position.copy(focus);
     dirLight.position.copy(focus).add(SUN_OFFSET);
     dirLight.target.updateMatrixWorld();
+
+    fillLight.target.position.copy(focus);
+    fillLight.position.copy(focus).add(FILL_OFFSET);
+    fillLight.target.updateMatrixWorld();
+}
+
+// --- SKY ---------------------------------------------------------------------
+// Drawn rather than downloaded. A night photograph of a sky is mostly noise and
+// compresses badly, and a painted one can be built to agree exactly with the
+// lighting rig: the moon below sits where dirLight actually shines from, and
+// the warm band along the horizon is the same sodium colour as the fill light.
+// 2048x1024 is ~2MB of GPU memory after mipping, against the 92MB the city
+// already costs, and it needs no network round trip.
+function makeNightSkyTexture() {
+    const W = 2048, H = 1024;
+    const canvas = document.createElement('canvas');
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext('2d');
+
+    // Equirectangular: row 0 is the zenith, row H/2 the horizon, row H the nadir.
+    const sky = ctx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0.00, '#04060e');
+    sky.addColorStop(0.28, '#0a1020');
+    sky.addColorStop(0.44, '#152238');
+    sky.addColorStop(0.50, '#25344a');   // horizon haze
+    sky.addColorStop(0.56, '#141c28');
+    sky.addColorStop(1.00, '#05070b');
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, W, H);
+
+    // City light pollution: a warm band hugging the horizon, brightest where
+    // the streets are densest. Uneven on purpose — a perfectly even band reads
+    // as a gradient, not as a city.
+    for (let i = 0; i < 5; i++) {
+        const cx = (i / 5 + 0.07) * W + Math.sin(i * 2.3) * 180;
+        const R = W * 0.16;
+        const glow = ctx.createRadialGradient(cx, H * 0.5, 0, cx, H * 0.5, R);
+        glow.addColorStop(0, 'rgba(255, 150, 70, 0.30)');
+        glow.addColorStop(0.5, 'rgba(255, 130, 60, 0.10)');
+        glow.addColorStop(1, 'rgba(255, 120, 50, 0)');
+        ctx.fillStyle = glow;
+        // Fill the gradient's whole bounding box. Clipping it to a shorter strip
+        // cuts the falloff off mid-ramp and leaves a hard line across the sky.
+        ctx.fillRect(cx - R, H * 0.5 - R, R * 2, R * 2);
+    }
+
+    // Stars, thinning out toward the horizon where the haze swallows them.
+    // Deterministic so the sky is identical every run.
+    let seed = 20260803;
+    const rand = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    for (let i = 0; i < 1400; i++) {
+        const x = rand() * W;
+        const y = rand() * H * 0.5;
+        const alt = 1 - (y / (H * 0.5));           // 1 at zenith, 0 at horizon
+        const a = (0.25 + rand() * 0.75) * (0.15 + alt * 0.85);
+        const r = 0.4 + rand() * (0.6 + alt * 0.5);
+        // A few stars run warm, most run cold — otherwise the field looks printed.
+        ctx.fillStyle = rand() > 0.85
+            ? `rgba(255, 226, 190, ${a})`
+            : `rgba(214, 230, 255, ${a})`;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // The moon, at the equirect coordinates matching LOOKS.night.keyDir:
+    //   u = atan2(z, x) / 2pi + 0.5,  v = asin(y) / pi + 0.5, canvas row = (1 - v) * H
+    const d = LOOKS.night.keyDir;
+    const mx = ((Math.atan2(d.z, d.x) / (Math.PI * 2)) + 0.5) * W;
+    const my = (1 - (Math.asin(d.y) / Math.PI + 0.5)) * H;
+    const halo = ctx.createRadialGradient(mx, my, 0, mx, my, 190);
+    halo.addColorStop(0.00, 'rgba(210, 226, 255, 0.55)');
+    halo.addColorStop(0.18, 'rgba(180, 200, 245, 0.16)');
+    halo.addColorStop(1.00, 'rgba(150, 175, 230, 0)');
+    ctx.fillStyle = halo;
+    ctx.beginPath(); ctx.arc(mx, my, 190, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#f2f6ff';
+    ctx.beginPath(); ctx.arc(mx, my, 21, 0, Math.PI * 2); ctx.fill();
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.mapping = THREE.EquirectangularReflectionMapping;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+}
+
+// Materials taken off the city GLB, kept so the tint can be re-applied when the
+// look changes without reloading 92MB.
+const cityMaterials = [];
+function applyCityTint() {
+    const tint = new THREE.Color(currentLook.cityTint);
+    for (const m of cityMaterials) {
+        if (!m || !m.color) continue;
+        // baseColor is what the GLB shipped; tint always multiplies that, so
+        // switching looks repeatedly never compounds.
+        m.color.copy(m.userData.baseColor || tint).multiply(tint);
+    }
+}
+
+let skyTexture = null;
+function applySky() {
+    if (skyTexture) { skyTexture.dispose(); skyTexture = null; }
+    if (scene.environment) { scene.environment.dispose(); scene.environment = null; }
+
+    const finish = (texture) => {
+        skyTexture = texture;
+        const pmrem = new THREE.PMREMGenerator(renderer);
+        // The sky stays sharp as the background; its prefiltered version becomes
+        // the scene's image-based light, so armour, car paint and the bike
+        // reflect an actual sky instead of being lit by lamps in a void.
+        scene.background = texture;
+        scene.environment = pmrem.fromEquirectangular(texture).texture;
+        pmrem.dispose();
+    };
+
+    if (currentLook.sky === 'night') {
+        finish(makeNightSkyTexture());
+    } else {
+        new THREE.TextureLoader().load('textures/sky.jpg', (texture) => {
+            texture.mapping = THREE.EquirectangularReflectionMapping;
+            texture.colorSpace = THREE.SRGBColorSpace;
+            finish(texture);
+        });
+    }
+}
+
+function applyLook(name) {
+    if (LOOKS[name]) currentLook = LOOKS[name];
+    const L = currentLook;
+
+    hemiLight.color.set(L.hemi.sky);
+    hemiLight.groundColor.set(L.hemi.ground);
+    hemiLight.intensity = L.hemi.intensity;
+
+    ambientLight.color.set(L.ambient.color);
+    ambientLight.intensity = L.ambient.intensity;
+
+    dirLight.color.set(L.key.color);
+    dirLight.intensity = L.key.intensity;
+    SUN_OFFSET = L.keyDir.clone().normalize().multiplyScalar(220);
+
+    fillLight.color.set(L.fill.color);
+    fillLight.intensity = L.fill.intensity;
+    // Opposite side, lower down — a bounce, not a second key.
+    FILL_OFFSET.set(-L.keyDir.x, Math.abs(L.keyDir.y) * 0.35, -L.keyDir.z)
+        .normalize().multiplyScalar(200);
+
+    if (!scene.fog) scene.fog = new THREE.Fog(L.fog, L.fogNear, L.fogFar);
+    scene.fog.color.set(L.fog);
+
+    applySky();
+    applyCityTint();
+    if (gradePass) applyGrade(L.grade);
 }
 
 // --- ENVIRONMENT ---
 function initEnvironment() {
-    const texLoader = new THREE.TextureLoader();
-    texLoader.load('textures/sky.jpg', (texture) => {
-        texture.mapping = THREE.EquirectangularReflectionMapping;
-        texture.colorSpace = THREE.SRGBColorSpace;
-
-        const pmremGenerator = new THREE.PMREMGenerator(renderer);
-        const envMap = pmremGenerator.fromEquirectangular(texture).texture;
-
-        // The sky itself stays sharp as the background; the prefiltered version
-        // becomes the scene's image-based light. This is the single biggest
-        // realism win available here and it costs nothing per frame: every PBR
-        // surface — knight armour, car paint, the bike — now reflects an actual
-        // sky and picks up its colour gradient instead of being lit by three
-        // abstract lamps in a void. It is also what the car loader's "no
-        // environment map, so metal rendered black" workaround was fighting.
-        scene.background = texture;
-        scene.environment = envMap;
-
-        pmremGenerator.dispose();
-    });
-
     // Aerial perspective. Distance haze is the strongest depth cue a flat
     // photogrammetry city can be given, and on fogged materials it is free —
     // it is already in every shader. The old fog was near-black navy starting
     // at 1500 units, i.e. invisible during play and, where it did land, it
     // darkened distance instead of lifting it the way real atmosphere does.
-    const fogColor = 0xb9c9d8;
-    scene.fog = new THREE.Fog(fogColor, 320, 2300);
+    scene.fog = new THREE.Fog(currentLook.fog, currentLook.fogNear, currentLook.fogFar);
 
     const floorGeo = new THREE.CircleGeometry(4000, 32);
     const floorMat = new THREE.MeshStandardMaterial({ 
@@ -1080,6 +1306,21 @@ function initEnvironment() {
 }
 
 initEnvironment();
+applyLook('night');
+
+// Live look controls, for dialling this in against the real map rather than
+// against a guess. In the browser console:
+//   mqLook({ exposure: 1.6, saturation: 0.9 })   tweak the grade
+//   mqLook('day') / mqLook('night')              switch time of day
+//   mqLookDump()                                 print the current numbers
+window.mqLook = (arg) => {
+    if (typeof arg === 'string') { applyLook(arg); return arg; }
+    Object.assign(currentLook.grade, arg || {});
+    applyGrade(currentLook.grade);
+    return currentLook.grade;
+};
+window.mqLookDump = () => JSON.stringify(currentLook.grade, null, 2);
+window.mqScene = scene;   // console handle, and how the sky gets inspected
 
 // --- CONTACT SHADOWS ---------------------------------------------------------
 // The city is MeshBasicMaterial, and a basic material cannot receive a shadow —
@@ -1412,6 +1653,11 @@ function toUnlitCityMaterial(src) {
             side: THREE.DoubleSide,   // photogrammetry has inconsistent winding
             fog: true
         });
+        // Remembering what the GLB shipped is what lets the time of day be
+        // switched over and over without the tint compounding into mud.
+        basic.userData.baseColor = basic.color.clone();
+        basic.color.multiply(new THREE.Color(currentLook.cityTint));
+        cityMaterials.push(basic);
         m.dispose();
         return basic;
     });
@@ -1441,6 +1687,7 @@ function loadLevel(mapName) {
     });
     while (cityGroup.children.length > 0) cityGroup.remove(cityGroup.children[0]);
     renderer.renderLists.dispose();
+    cityMaterials.length = 0;   // these were just disposed with the old map
     colliderMeshes = [];
     roadMeshes = [];
     groundMeshes = [];
@@ -4092,8 +4339,8 @@ function animate() {
      if (isMapOpen) {
          targetPos = playerGroup.position.clone().add(new THREE.Vector3(0, 200, 0)); 
         targetLook = playerGroup.position.clone();
-         targetFogNear = 260;
-         targetFogFar = 1500;
+         targetFogNear = currentLook.mapFogNear;
+         targetFogFar = currentLook.mapFogFar;
          beaconGroup.scale.set(4, 4, 4);
      } else {
         const offset = new THREE.Vector3(
@@ -4103,8 +4350,8 @@ function animate() {
         ).applyAxisAngle(new THREE.Vector3(0, 1, 0), cameraAngle);
          targetPos = playerGroup.position.clone().add(offset);
         targetLook = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 0));
-        targetFogNear = 320;
-         targetFogFar = 2300;
+        targetFogNear = currentLook.fogNear;
+         targetFogFar = currentLook.fogFar;
          beaconGroup.scale.set(1, 1, 1);
      }
 

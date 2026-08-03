@@ -1322,6 +1322,10 @@ window.mqLook = (arg) => {
 window.mqLookDump = () => JSON.stringify(currentLook.grade, null, 2);
 window.mqScene = scene;   // console handle, and how the sky gets inspected
 
+// Swap maps without editing the source, for A/B-ing a re-exported city against
+// the one in use: mqLoadMap('shoreditch-flat.glb')
+window.mqLoadMap = (name) => { currentMapName = name; loadLevel(name); return name; };
+
 // --- CONTACT SHADOWS ---------------------------------------------------------
 // The city is MeshBasicMaterial, and a basic material cannot receive a shadow —
 // so no matter how good the shadow map gets, nothing the player, the police or

@@ -1241,6 +1241,48 @@ window.mqPlayerInfo = () => {
 // Test hook: armour normally only changes by collecting a pickup.
 window.mqDebugArmor = (n) => { armor = n; };
 
+// Reports where the tee actually ends up. Box3.setFromObject is useless on a
+// SkinnedMesh — it reads bind-space geometry and ignores the bones — so this
+// walks real vertices through getVertexPosition(), which does apply them.
+window.mqTeeInfo = () => {
+    if (!playerMesh) return { ready: false };
+
+    const measure = (root) => {
+        const box = new THREE.Box3();
+        const v = new THREE.Vector3();
+        let sampled = 0;
+        root.traverse(o => {
+            if (!o.isMesh || !o.geometry?.attributes?.position) return;
+            const n = o.geometry.attributes.position.count;
+            const step = Math.max(1, Math.ceil(n / 400));   // sample; some of these are dense
+            for (let i = 0; i < n; i += step) {
+                o.getVertexPosition(i, v);
+                box.expandByPoint(o.localToWorld(v));
+                sampled++;
+            }
+        });
+        if (sampled === 0) return null;
+        const r = (p) => [+p.x.toFixed(2), +p.y.toFixed(2), +p.z.toFixed(2)];
+        return { min: r(box.min), max: r(box.max), sampled };
+    };
+
+    let playerSkin = null;
+    playerMesh.traverse(o => { if (!playerSkin && o.isSkinnedMesh) playerSkin = o; });
+
+    return {
+        ready: true,
+        templateLoaded: !!wornTeeTemplate,
+        templateSkinned: wornTeeTemplate
+            ? (() => { let s = false; wornTeeTemplate.traverse(o => { if (o.isSkinnedMesh) s = true; }); return s; })()
+            : null,
+        attached: !!wornTeeInstance,
+        visible: wornTeeInstance ? wornTeeInstance.visible : false,
+        armor,
+        tee: wornTeeInstance ? measure(wornTeeInstance) : null,
+        player: playerSkin ? measure(playerSkin) : null
+    };
+};
+
 loader.load('ps1_psx_knight.glb', (gltf) => {
     pendingKnight = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR });
     pendingKnight.traverse(o => {
@@ -1310,10 +1352,16 @@ function tryBuildBikeRider() {
     const crunches = THREE.AnimationClip.findByName(pendingBikeClips, 'crunches');
     if (!crunches) { console.warn('Bike: no "crunches" clip to drive the rider'); return; }
 
-    // Anchor on the original rider's skeleton before hiding it.
+    // Anchor on the original rider's skeleton before hiding it. Capture the
+    // bone references now: once the knight is parented under the bike, a
+    // findBone() search would be as likely to return one of his.
     const riderHips = findBone(playerBikeMesh, 'mixamorig:Hips');
     const riderTop  = findBone(playerBikeMesh, 'mixamorig:HeadTop_End');
-    if (!riderHips || !riderTop) { console.warn('Bike: rider skeleton not found'); return; }
+    const riderLSh  = findBone(playerBikeMesh, 'mixamorig:LeftShoulder');
+    const riderRSh  = findBone(playerBikeMesh, 'mixamorig:RightShoulder');
+    if (!riderHips || !riderTop || !riderLSh || !riderRSh) {
+        console.warn('Bike: rider skeleton not found'); return;
+    }
 
     playerBikeMesh.updateWorldMatrix(true, true);
     const riderHipsW = new THREE.Vector3().setFromMatrixPosition(riderHips.matrixWorld);
@@ -1340,14 +1388,6 @@ function tryBuildBikeRider() {
     const s = kSpan > 1e-6 ? riderSpan / kSpan : 1;
     bikeRider.scale.setScalar(s);
 
-    // Nudge so the knight's hips land exactly where the rider's were.
-    bikeRider.updateWorldMatrix(true, true);
-    const kHipsW = new THREE.Vector3().setFromMatrixPosition(kHips.matrixWorld);
-    bikeRider.position.add(
-        playerBikeMesh.worldToLocal(riderHipsW.clone())
-            .sub(playerBikeMesh.worldToLocal(kHipsW.clone()))
-    );
-
     const retargeted = retargetClips([crunches], bikeRider)[0];
     const rotationOnly = new THREE.AnimationClip(
         'bike-ride',
@@ -1358,9 +1398,62 @@ function tryBuildBikeRider() {
     bikeRiderMixer = new THREE.AnimationMixer(bikeRider);
     bikeRiderMixer.clipAction(rotationOnly).play();
 
+    // Orient the knight on the bike.
+    //
+    // "crunches" is a sit-up clip; what makes it read as pedalling is the bike
+    // armature's own node rotation, which the knight — parented to the bike root
+    // — does not inherit. Left uncorrected he lies on his back across the frame.
+    //
+    // Matching his Hips *bone* frame to the rider's does not fix it: the two rigs
+    // came through different exporters and their joint rest orientations differ,
+    // which lands him head-down instead. So match the *body*. Pose both skeletons
+    // identically, then align spine-up and shoulder-across between them. That is
+    // measured from where the bones actually are, so it does not care how either
+    // rig chose to orient its joints.
+    if (bikeMixer) bikeMixer.setTime(0);
+    bikeRiderMixer.setTime(0);
+    playerBikeMesh.updateWorldMatrix(true, true);
+
+    const posOf = (o) => new THREE.Vector3().setFromMatrixPosition(o.matrixWorld);
+    const bodyFrame = (hips, top, lsh, rsh) => {
+        const up = posOf(top).sub(posOf(hips)).normalize();
+        const across = posOf(rsh).sub(posOf(lsh));
+        across.sub(up.clone().multiplyScalar(across.dot(up))).normalize();
+        const fwd = new THREE.Vector3().crossVectors(across, up);
+        return new THREE.Quaternion().setFromRotationMatrix(
+            new THREE.Matrix4().makeBasis(across, up, fwd)
+        );
+    };
+
+    const kLSh = findBone(bikeRider, 'mixamorig:LeftShoulder');
+    const kRSh = findBone(bikeRider, 'mixamorig:RightShoulder');
+    let alignedBy = null;
+    if (kLSh && kRSh) {
+        const qRider  = bodyFrame(riderHips, riderTop, riderLSh, riderRSh);
+        const qKnight = bodyFrame(kHips, kTop, kLSh, kRSh);
+        const delta = qRider.multiply(qKnight.invert());
+        alignedBy = THREE.MathUtils.radToDeg(2 * Math.acos(Math.min(1, Math.abs(delta.w))));
+
+        // delta is in world space; bikeRider's rotation is in the bike's.
+        const bikeQ = new THREE.Quaternion();
+        playerBikeMesh.matrixWorld.decompose(new THREE.Vector3(), bikeQ, new THREE.Vector3());
+        bikeRider.quaternion.premultiply(bikeQ.clone().invert().multiply(delta).multiply(bikeQ));
+    } else {
+        console.warn('Bike: knight has no shoulder bones; leaving him unaligned');
+    }
+
+    // Nudge so the knight's hips land exactly where the rider's were. Must come
+    // after the rotation, which moves them.
+    bikeRider.updateWorldMatrix(true, true);
+    bikeRider.position.add(
+        playerBikeMesh.worldToLocal(posOf(riderHips))
+            .sub(playerBikeMesh.worldToLocal(posOf(kHips)))
+    );
+
     console.log(
         `Bike rider: knight scaled ${s.toFixed(3)} (rider span ${riderSpan.toFixed(3)} / ` +
-        `knight ${kSpan.toFixed(3)}), ${rotationOnly.tracks.length} rotation tracks`
+        `knight ${kSpan.toFixed(3)}), ${rotationOnly.tracks.length} rotation tracks` +
+        (alignedBy === null ? '' : `, aligned by ${alignedBy.toFixed(1)}deg`)
     );
 }
 

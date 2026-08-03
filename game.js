@@ -102,6 +102,15 @@ startCard.addEventListener('click', () => {
 const keys = { w: false, a: false, s: false, d: false, space: false, k: false, punch: false, superJump: false };
 let cameraAngle = 0;
 const cameraRotationSpeed = 0.03;
+
+// Chase camera. Pitch starts at the angle the old fixed (0, 6, -10) offset gave,
+// so the default view is unchanged; drag now moves both.
+const CAMERA_DISTANCE   = Math.hypot(6, 10);
+const CAMERA_PITCH_MIN  = 0.08;   // just above ground level
+const CAMERA_PITCH_MAX  = 1.25;   // near top-down, short of gimbal trouble
+const CAMERA_DRAG_YAW   = 0.005;  // radians per pixel
+const CAMERA_DRAG_PITCH = 0.004;
+let cameraPitch = Math.atan2(6, 10);
 const currentLookAt = new THREE.Vector3(0, 0, 0);
 
 let roamingNPCs = []; // civilian roamers — hostile once you get close
@@ -147,8 +156,12 @@ const CAR_LANE_OFFSET  = 3.5;   // shifted off the road centreline, so both
                                 // directions aren't driving down the same line
 const CAR_SPAWN_RATE   = 0.5;   // seconds between attempts, until MAX_CARS
 const CAR_RAY_HEIGHT   = 10;    // how far above itself a car looks for the road
-const CAR_GROUND_SNAP  = 12;    // lerp rate onto the surface; stiffer than the
-                                // NPCs' since cars cover ground much faster
+// Vertical rate limits, in world units per second. Climb is the important one:
+// it's what stops a car riding up a scan artefact. At 30 units/s forward, 8/s
+// vertical still clears any real gradient in Shoreditch, while a sharp spike
+// only lifts the car a few centimetres before it has driven past.
+const CAR_MAX_CLIMB_RATE = 8;
+const CAR_MAX_FALL_RATE  = 30;
 let carTemplates = [];
 let cars = [];
 let carSpawnTimer = 0;
@@ -437,6 +450,7 @@ let groundMeshes = []; // Only flat/road geometry — used for ground snapping
 const NAV_CELL = 20;        // world-units per grid cell
 const NAV_HALF = 4000;      // map extends ±4000 (matches MAP_LIMIT)
 const NAV_DIM = Math.ceil((NAV_HALF * 2) / NAV_CELL); // 400 cells per axis
+const NAV_SMOOTH_R = 2;     // median-filter radius, in cells, over sampled road heights
 let navGrid = null;         // Uint8Array[NAV_DIM*NAV_DIM], 1=road 0=blocked
 let navHeightGrid = null;   // Float32Array[NAV_DIM*NAV_DIM], road surface Y per cell
 let currentNavPath = [];    // THREE.Vector3[] waypoints along road
@@ -612,6 +626,41 @@ renderer.useLegacyLights = false;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 document.body.appendChild(renderer.domElement);
+
+// --- DRAG TO LOOK ------------------------------------------------------------
+// Pointer events cover mouse and touch in one path. Listening on the canvas
+// rather than the window means the HUD buttons and the nipplejs joystick — both
+// real DOM elements sitting above it — keep their own input untouched.
+renderer.domElement.style.touchAction = 'none';   // stop mobile treating a drag as a scroll
+{
+    let dragPointer = null, lastX = 0, lastY = 0;
+
+    renderer.domElement.addEventListener('pointerdown', (e) => {
+        dragPointer = e.pointerId;
+        lastX = e.clientX; lastY = e.clientY;
+        renderer.domElement.setPointerCapture(e.pointerId);
+    });
+
+    const endDrag = (e) => {
+        if (dragPointer !== e.pointerId) return;
+        dragPointer = null;
+        if (renderer.domElement.hasPointerCapture(e.pointerId)) {
+            renderer.domElement.releasePointerCapture(e.pointerId);
+        }
+    };
+    renderer.domElement.addEventListener('pointerup', endDrag);
+    renderer.domElement.addEventListener('pointercancel', endDrag);
+
+    renderer.domElement.addEventListener('pointermove', (e) => {
+        if (dragPointer !== e.pointerId) return;
+        cameraAngle -= (e.clientX - lastX) * CAMERA_DRAG_YAW;
+        cameraPitch = THREE.MathUtils.clamp(
+            cameraPitch + (e.clientY - lastY) * CAMERA_DRAG_PITCH,
+            CAMERA_PITCH_MIN, CAMERA_PITCH_MAX
+        );
+        lastX = e.clientX; lastY = e.clientY;
+    });
+}
 
 // Surviving a GPU reset beats a blank canvas. iOS usually kills the tab outright
 // rather than firing this, but it's a free safety net.
@@ -2022,9 +2071,15 @@ function buildNavGrid() {
 
     const grid    = new Uint8Array(NAV_DIM * NAV_DIM);
     const heights = new Float32Array(NAV_DIM * NAV_DIM);
+    const sampled = new Uint8Array(NAV_DIM * NAV_DIM);   // did this cell get a real ground hit
     const down    = new THREE.Vector3(0, -1, 0);
     const rc      = new THREE.Raycaster();
     rc.firstHitOnly = true;
+
+    // The height ray must see every surface it passes through, not just the
+    // topmost one, so it can pick the street out from under bridges and roofs.
+    const rcHeight = new THREE.Raycaster();
+    rcHeight.firstHitOnly = false;
 
     // Must start above the tallest geometry. Shoreditch reaches world Y ~590,
     // so the previous origin of 500 began *inside* the map.
@@ -2064,10 +2119,17 @@ function buildNavGrid() {
 
             // Height therefore has to come from the street surface above it, or
             // waypoints land 350 units underground and the trail is invisible.
-            rc.set(origin, down);
-            const ground = rc.intersectObjects(heightMeshes, false);
+            //
+            // Take the LOWEST surface, not the first one hit. Casting down from
+            // Y=2000 and accepting hits[0] returns whatever is on top of the
+            // cell — a roof, a bridge deck, a scan artefact — which is why the
+            // navigation trail climbed into the sky and the traffic drove up
+            // into the air with it. The street is the bottom-most surface.
+            rcHeight.set(origin, down);
+            const ground = rcHeight.intersectObjects(heightMeshes, false);
             if (ground.length > 0) {
-                heights[i] = ground[0].point.y;
+                heights[i] = ground[ground.length - 1].point.y;
+                sampled[i] = 1;
             } else {
                 heights[i] = 0;
                 noHeight++;
@@ -2075,13 +2137,44 @@ function buildNavGrid() {
         }
     }
 
+    // Median-filter across each road's neighbourhood. Picking the lowest hit
+    // fixes overhangs, but the photogrammetry still has pits and spikes that a
+    // single sample can land in; a median throws those out while preserving
+    // genuine gradients (unlike a blur, which would drag hills flat).
+    const smoothed = new Float32Array(heights);
+    const bucket = [];
+    let repaired = 0;
+    for (let gz = 0; gz < NAV_DIM; gz++) {
+        for (let gx = 0; gx < NAV_DIM; gx++) {
+            const i = gz * NAV_DIM + gx;
+            if (!grid[i]) continue;
+            bucket.length = 0;
+            for (let dz = -NAV_SMOOTH_R; dz <= NAV_SMOOTH_R; dz++) {
+                const nz = gz + dz;
+                if (nz < 0 || nz >= NAV_DIM) continue;
+                for (let dx = -NAV_SMOOTH_R; dx <= NAV_SMOOTH_R; dx++) {
+                    const nx = gx + dx;
+                    if (nx < 0 || nx >= NAV_DIM) continue;
+                    const j = nz * NAV_DIM + nx;
+                    if (grid[j] && sampled[j]) bucket.push(heights[j]);
+                }
+            }
+            if (bucket.length === 0) continue;
+            bucket.sort((a, b) => a - b);
+            const median = bucket[bucket.length >> 1];
+            if (Math.abs(median - heights[i]) > 1.0) repaired++;
+            smoothed[i] = median;
+        }
+    }
+
     navGrid = grid;
-    navHeightGrid = heights;
+    navHeightGrid = smoothed;
     const roadCells = grid.reduce((s, v) => s + v, 0);
     console.log(
         `Nav grid built: ${NAV_DIM}x${NAV_DIM}, road cells: ${roadCells}` +
         ` (source: ${useRoadMeshes ? 'DATA_ROAD meshes' : 'collider fallback'})` +
-        (noHeight ? `, ${noHeight} without a ground sample` : '')
+        (noHeight ? `, ${noHeight} without a ground sample` : '') +
+        `, ${repaired} heights corrected by the median filter`
     );
     if (roadCells === 0) {
         console.warn('Nav grid has no road cells — navigation will fall back to straight lines.');
@@ -2417,6 +2510,18 @@ for (const file of CAR_FILES) {
     loader.load(file, (gltf) => {
         const model = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR, castShadow: false });
 
+        // The Golf's body material ships as metallicFactor 1.0. A fully metallic
+        // PBR surface reflects its environment and nothing else, and this scene
+        // has no environment map, so it rendered pure black. Force every car
+        // dielectric — same workaround the bike loader already needs.
+        model.traverse(o => {
+            if (!o.isMesh || !o.material) return;
+            for (const mat of Array.isArray(o.material) ? o.material : [o.material]) {
+                if (mat.metalness !== undefined) mat.metalness = 0.0;
+                if (mat.roughness !== undefined) mat.roughness = Math.min(mat.roughness ?? 0.8, 0.8);
+            }
+        });
+
         // Normalise to a consistent road-car size and work out which way the
         // model faces, so the two GLBs don't need to agree with each other.
         const box = new THREE.Box3().setFromObject(model);
@@ -2434,9 +2539,12 @@ for (const file of CAR_FILES) {
         // Cars are driven along +Z; if the model is longest on X it's built
         // side-on and needs a quarter turn.
         carTemplates.push({ model, lift, yawFix: size.x > size.z ? Math.PI / 2 : 0 });
+        let metals = 0;
+        model.traverse(o => { if (o.isMesh && o.material && o.material.metalness === 0) metals++; });
         console.log(
             `Traffic: loaded ${file} (${size.x.toFixed(1)} x ${size.z.toFixed(1)} ` +
-            `-> scaled ${scale.toFixed(3)}, ride height offset ${lift.toFixed(3)})`
+            `-> scaled ${scale.toFixed(3)}, ride height offset ${lift.toFixed(3)}, ` +
+            `${metals} material(s) forced dielectric)`
         );
     }, undefined, (err) => console.error(`Traffic: failed to load ${file}`, err));
 }
@@ -2460,7 +2568,16 @@ function spawnCar() {
     const template = carTemplates[Math.floor(Math.random() * carTemplates.length)];
     const mesh = template.model.clone(true);
     mesh.position.copy(path[0]);
-    mesh.position.y += template.lift;   // so it isn't buried on its first frame
+
+    // Start from a measured surface, not the nav grid's cell height — those are
+    // wrong under roofs, and with the rate limiter a car that starts in the air
+    // takes seconds to sink back down in full view.
+    const surfaces = groundMeshes.length > 0 ? groundMeshes : colliderMeshes;
+    raycaster.set(new THREE.Vector3(path[0].x, path[0].y + CAR_RAY_HEIGHT, path[0].z), downVector);
+    const hit = raycaster.intersectObjects(surfaces, false);
+    if (hit.length > 0) path[0].y = hit[0].point.y;
+
+    mesh.position.y = path[0].y + template.lift;   // so it isn't buried on frame one
     scene.add(mesh);
 
     cars.push({
@@ -2535,8 +2652,19 @@ function updateTraffic(delta) {
             downVector
         );
         const ground = raycaster.intersectObjects(surfaces, false);
-        const surfaceY = ground.length > 0 ? ground[0].point.y : target.y;
-        car.pos.y = THREE.MathUtils.lerp(car.pos.y, surfaceY, CAR_GROUND_SNAP * delta);
+
+        // Neither height source can be trusted absolutely. The photogrammetry
+        // road carries spikes no real car would climb, and the nav grid's
+        // per-cell heights are wrong wherever a cell sits under a roof or an
+        // overpass — anchoring to those was launching cars tens of units into
+        // the air. So bound the *rate* of vertical change instead: a car tracks
+        // the surface exactly while it's smooth, can only creep up a spike, and
+        // settles back down under its own weight.
+        const climb = CAR_MAX_CLIMB_RATE * delta;
+        const fall  = CAR_MAX_FALL_RATE * delta;
+        car.pos.y = ground.length > 0
+            ? THREE.MathUtils.clamp(ground[0].point.y, car.pos.y - fall, car.pos.y + climb)
+            : car.pos.y - fall;   // nothing beneath it — settle
         car.mesh.position.y = car.pos.y + car.lift;
 
         // Swept against the whole step, not just the end point. At 34 units/s a
@@ -2563,6 +2691,69 @@ window.mqDebugRunOver = () => {
 };
 
 window.mqGameOverReason = () => gameOverReason;
+
+window.mqCameraInfo = () => ({ yaw: +cameraAngle.toFixed(4), pitch: +cameraPitch.toFixed(4) });
+
+// Steepness of the navigation path. A road-following route should be close to
+// flat; anything steep means the nav grid's heights have picked up a roof or a
+// bridge deck again, which is what sent the trail climbing into the sky.
+window.mqNavPathInfo = () => {
+    if (!currentNavPath || currentNavPath.length < 2) return { waypoints: currentNavPath ? currentNavPath.length : 0, maxSlopeDeg: null };
+    let maxSlope = 0, maxRise = 0;
+    for (let i = 1; i < currentNavPath.length; i++) {
+        const a = currentNavPath[i - 1], b = currentNavPath[i];
+        const flat = Math.hypot(b.x - a.x, b.z - a.z);
+        const rise = Math.abs(b.y - a.y);
+        maxRise = Math.max(maxRise, rise);
+        if (flat > 1e-3) maxSlope = Math.max(maxSlope, THREE.MathUtils.radToDeg(Math.atan2(rise, flat)));
+    }
+    return {
+        waypoints: currentNavPath.length,
+        maxSlopeDeg: +maxSlope.toFixed(1),
+        maxRise: +maxRise.toFixed(2)
+    };
+};
+
+// How wide is each road, in grid cells? The scraped DATA_ROADS geometry doesn't
+// say which ways are drivable — a service alley and a bus route are the same
+// polyline — but corridor width is a decent proxy: a real street spans several
+// cells across, a footpath spans one. Reports the distribution so a traffic
+// width threshold can be chosen from data rather than guessed.
+window.mqNavStats = () => {
+    if (!navGrid) return null;
+    const at = (gx, gz) => (gx < 0 || gz < 0 || gx >= NAV_DIM || gz >= NAV_DIM) ? 0 : navGrid[gz * NAV_DIM + gx];
+    const run = (gx, gz, dx, dz) => {
+        let n = 1;
+        for (let i = 1; i < 12 && at(gx + dx * i, gz + dz * i); i++) n++;
+        for (let i = 1; i < 12 && at(gx - dx * i, gz - dz * i); i++) n++;
+        return n;
+    };
+    const hist = new Map();
+    let total = 0;
+    for (let gz = 0; gz < NAV_DIM; gz++) {
+        for (let gx = 0; gx < NAV_DIM; gx++) {
+            if (!at(gx, gz)) continue;
+            total++;
+            // Narrowest of the two axes approximates the corridor width: a road
+            // running east-west is long on X and only a few cells thick on Z.
+            const w = Math.min(run(gx, gz, 1, 0), run(gx, gz, 0, 1));
+            hist.set(w, (hist.get(w) || 0) + 1);
+        }
+    }
+    const widths = [...hist.entries()].sort((a, b) => a[0] - b[0]);
+    return {
+        cellSize: NAV_CELL,
+        roadCells: total,
+        byWidth: widths.map(([w, n]) => ({
+            cells: w, worldUnits: w * NAV_CELL, count: n, pct: +(n / total * 100).toFixed(1)
+        })),
+        survivingAtThreshold: [2, 3, 4, 5].map(t => ({
+            minCells: t,
+            minWorldUnits: t * NAV_CELL,
+            cells: widths.filter(([w]) => w >= t).reduce((s, [, n]) => s + n, 0)
+        }))
+    };
+};
 
 window.mqTrafficInfo = () => {
     // `gap` measures each car's underside against the surface directly beneath
@@ -3583,7 +3774,11 @@ function animate() {
          targetFogFar = 800;
          beaconGroup.scale.set(4, 4, 4);
      } else {
-        const offset = new THREE.Vector3(0, 6, -10).applyAxisAngle(new THREE.Vector3(0,1,0), cameraAngle);
+        const offset = new THREE.Vector3(
+            0,
+            Math.sin(cameraPitch) * CAMERA_DISTANCE,
+            -Math.cos(cameraPitch) * CAMERA_DISTANCE
+        ).applyAxisAngle(new THREE.Vector3(0, 1, 0), cameraAngle);
          targetPos = playerGroup.position.clone().add(offset);
         targetLook = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 0));
         targetFogNear = 1500;

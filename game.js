@@ -205,6 +205,8 @@ window.resetGame = () => {
     // 1. Reset Game State Variables
     score = 0;
     armor = 0;
+    armorTee = 0;
+    armorBelt = 0;
     timeLeft = START_TIME;
     gameActive = true;
     isBusted = false;
@@ -435,7 +437,12 @@ const WANTED_LEVEL_2_SCORE = 5;
 
 // STATE
 let score = 0;
+// Total armour, and what it is made of. The two are tracked apart because the
+// player wears what they picked up: one counter meant a belt pickup put the
+// t-shirt on him. `armor` stays the sum, which is what the HUD and damage use.
 let armor = 0;
+let armorTee = 0;
+let armorBelt = 0;
 let timeLeft = START_TIME;
 let gameActive = false;
 let isPaused = false; 
@@ -1964,12 +1971,13 @@ window.mqPlayerInfo = () => {
         scale: +playerMesh.scale.x.toFixed(3),
         boneName: bone ? bone.name : null,
         clips: [...animationsMap.keys()],
-        teeKnight: {
-            loaded: !!teeKnightTemplate,
-            onFoot: !!teeOnFoot,
-            onBike: !!teeOnBike,
-            showing: !!(teeOnFoot && teeOnFoot.mesh.visible)
-        },
+        garments: GARMENT_TYPES.map(t => ({
+            key: t.key,
+            loaded: !!t.template,
+            onFoot: footRig && footRig.garments[t.key] ? footRig.garments[t.key].length : 0,
+            onBike: bikeRig && bikeRig.garments[t.key] ? bikeRig.garments[t.key].length : 0,
+            worn: t.worn()
+        })),
         current: currentAction ? currentAction.getClip().name : null,
         running: currentAction ? currentAction.isRunning() : false,
         boneQ: bone ? bone.quaternion.toArray().map(v => +v.toFixed(4)) : null,
@@ -1979,7 +1987,16 @@ window.mqPlayerInfo = () => {
     };
 };
 // Test hook: armour normally only changes by collecting a pickup.
-window.mqDebugArmor = (n) => { armor = n; };
+// mqDebugArmor(2) puts the t-shirt on, mqDebugArmor(1, 'belt') the belt,
+// mqDebugArmor(0) takes whichever off. Applies straight away rather than waiting
+// for the next frame, so it works from a paused game or a test harness.
+window.mqDebugArmor = (n, kind = 'tee') => {
+    if (kind === 'belt') armorBelt = n; else armorTee = n;
+    if (n === 0) { armorTee = 0; armorBelt = 0; }
+    armor = armorTee + armorBelt;
+    updatePlayerSkin();
+    return { armor, armorTee, armorBelt };
+};
 
 window.mqCombatInfo = () => ({
     playerHealth,
@@ -2334,139 +2351,187 @@ function updateWornTee() {
     if (wornTeeInstance) wornTeeInstance.visible = shouldWear && !hasBike;
 }
 
-// --- TEE KNIGHT -------------------------------------------------------------
-// A whole second knight model that already has the shirt on, shown instead of
-// the bare one while the player is carrying tee armour, and dropped the moment
-// the armour is punched off.
+// --- WORN MODELS ------------------------------------------------------------
+// Picking up a t-shirt shows a knight who is already wearing one, on foot and
+// on the bike, and punching the armour off puts the bare one back.
 //
-// It works as a swap rather than a garment because it shares the base knight's
-// skeleton exactly — same joint names, same rest pose — so the same retargeted
-// clips drive it and, on the bike, the alignment already solved for bikeRider
-// transfers across untouched.
+// This does NOT run the tee'd model as a second animated character. That was
+// the first attempt and it failed in two ways at once: the copy's transform was
+// set once at build time so he never turned to face where he was running, and
+// on the bike his own mixer left him standing in bind pose through the pedal
+// animation. Both are the same underlying mistake — a second skeleton has to be
+// kept in step with the first, and anything that has to be kept in step drifts.
 //
-// The two models are NOT kept in sync by running two mixers over the same
-// clips: floating point drift would let them slide apart, and a swap mid-stride
-// would pop. The bare knight's mixer stays authoritative and this one is told
-// what time it is, so a swap lands on exactly the same frame of the same clip.
-// In preference order. The first is the one to use: 549 vertices against the
-// bare knight's 532, so wearing the shirt costs essentially nothing and it
-// keeps the PS1 silhouette the rest of the game is drawn in.
-// The others are fallbacks for the sculpt export, which is 609,841 vertices —
-// 1,100x the model it replaces, and skinned, where cost scales with vertex
-// count. tools/optimize-assets.mjs has a job that takes it to 188k if it is
-// ever the only one available.
-const TEE_KNIGHT_FILES = [
-    'knight_with_tee.glb',         // 549 verts, 264KB
-    'knight_tee.glb',              // optimised sculpt: 188k verts, 8.2MB
-    'knight with tee test.glb'     // raw sculpt export: 610k verts, 30.5MB
+// Instead only the tee'd model's SKINNED MESHES are taken, and they are bound
+// to the knight's own skeleton and parented alongside his original meshes. The
+// two rigs have identical joint order (verified with tools/joint-diff.mjs), so
+// the bones can simply be shared. Wearing the shirt is then a visibility flag
+// on two meshes: it cannot drift, it needs no mixer, it inherits every
+// transform and animation for free, and it works the same on the bike as on
+// foot without knowing anything about either.
+//
+// It is also how the belt should be added — see attachGarment.
+// Each entry is one thing the knight can be wearing.
+//
+//   files      tried in order; the first that loads wins, the rest are
+//              fallbacks. Missing files are not an error — a garment with no
+//              model simply never appears.
+//   hidesBase  true for a whole re-exported knight (the shirt version replaces
+//              him); false for a garment that is only the extra geometry and
+//              sits on top of the bare model.
+//   worn       when to show it.
+//
+// TO ADD THE BELT: export ONLY the fattened ring of faces, still weighted to
+// the same armature, as knight_with_belt.glb, and it will be picked up here
+// with no other change. See the note above attachGarment for why that beats
+// exporting another whole knight.
+const GARMENT_TYPES = [
+    {
+        key: 'tee',
+        // 549 verts against the bare knight's 532, so the shirt costs nothing
+        // and keeps the PS1 silhouette. The others are fallbacks for the sculpt
+        // export, which is 609,841 verts — 1,100x the model it replaces, and
+        // skinned, where cost scales directly with vertex count.
+        // optimize-assets.mjs has a job that takes it to 188k if it is ever the
+        // only one available.
+        files: [
+            'knight_with_tee.glb',       // 549 verts, 264KB
+            'knight_tee.glb',            // optimised sculpt: 188k verts, 8.2MB
+            'knight with tee test.glb'   // raw sculpt export: 610k verts, 30.5MB
+        ],
+        hidesBase: true,
+        worn: () => armorTee > 0
+    },
+    {
+        key: 'belt',
+        files: ['knight_with_belt.glb'],
+        hidesBase: false,
+        worn: () => armorBelt > 0
+    }
 ];
-let teeKnightTemplate = null;
-let teeOnFoot = null;   // { mesh, mixer, actions, current }
-let teeOnBike = null;   // { mesh, mixer }
 
-function loadTeeKnight(i = 0) {
-    if (i >= TEE_KNIGHT_FILES.length) {
-        console.log('Tee knight: no model found — falling back to the worn-tee attachment');
+let footRig = null;   // { base: SkinnedMesh[], garments: { key: SkinnedMesh[] } }
+let bikeRig = null;
+
+function loadGarment(type, i = 0) {
+    if (i >= type.files.length) {
+        console.log(`Garment "${type.key}": no model found, skipping`);
         return;
     }
-    const file = TEE_KNIGHT_FILES[i];
-    // encodeURI because the raw export has spaces in its filename.
+    const file = type.files[i];
+    // encodeURI because the raw sculpt export has spaces in its filename.
     loader.load(encodeURI(file), (gltf) => {
-        teeKnightTemplate = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR });
-        teeKnightTemplate.traverse(o => {
+        type.template = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR });
+        type.template.traverse(o => {
             if (o.isMesh && o.material) {
                 o.material.metalness = 0.0;
                 o.material.roughness = 0.9;
             }
         });
-        console.log('Tee knight: loaded', file);
-    }, undefined, () => loadTeeKnight(i + 1));
+        console.log(`Garment "${type.key}": loaded ${file}`);
+    }, undefined, () => loadGarment(type, i + 1));
 }
-loadTeeKnight();
+for (const type of GARMENT_TYPES) loadGarment(type);
 
-function buildTeeOnFoot() {
-    if (teeOnFoot || !teeKnightTemplate || !playerMesh || !npcClips) return;
+/**
+ * Lifts the skinned meshes out of `template` and hangs them on `host`'s
+ * skeleton, returning { garment, base } — the meshes added, and the host's own
+ * meshes that were there first.
+ *
+ * Only works because the two exports share a skeleton with identical joint
+ * ORDER: skin indices are positions in the bone array, so a rig with the same
+ * names in a different order would deform into confetti. Check a new export
+ * with `node tools/joint-diff.mjs ps1_psx_knight.glb your-model.glb` before
+ * relying on it.
+ *
+ * The template's own bones are discarded — the host's drive everything. The
+ * meshes are reparented to sit exactly where the host's skin sits in the
+ * hierarchy, because a SkinnedMesh is still positioned by its own world matrix
+ * and the bind matrix we borrow belongs to the host.
+ */
+function attachGarment(host, template) {
+    if (!host || !template) return null;
 
-    const mesh = SkeletonUtils.clone(teeKnightTemplate);
-    mesh.scale.copy(playerMesh.scale);
-    mesh.rotation.copy(playerMesh.rotation);
-    mesh.position.copy(playerMesh.position);
-    mesh.visible = false;
-    playerGroup.add(mesh);
+    let hostSkin = null;
+    host.traverse(o => { if (!hostSkin && o.isSkinnedMesh) hostSkin = o; });
+    if (!hostSkin) return null;
 
-    const mixer2 = new THREE.AnimationMixer(mesh);
-    const actions = new Map();
-    for (const clip of retargetClips(npcClips, mesh)) {
-        if (['Idle', 'Run', 'Jump', 'Punch'].includes(clip.name)) {
-            actions.set(clip.name, mixer2.clipAction(clip));
-        }
+    // bikeRider is a SkeletonUtils.clone of playerMesh, so if the player was
+    // already dressed when the bike finished loading, the clone arrives wearing
+    // a copy of the garment. Drop those before counting what is underneath, or
+    // the bike rider ends up in two shirts and the bare meshes never show again.
+    const stale = [];
+    host.traverse(o => { if (o.isSkinnedMesh && o.userData.isGarment) stale.push(o); });
+    for (const m of stale) if (m.parent) m.parent.remove(m);
+
+    const base = [];
+    host.traverse(o => { if (o.isSkinnedMesh) base.push(o); });
+
+    const clone = SkeletonUtils.clone(template);
+    const garment = [];
+    clone.traverse(o => { if (o.isSkinnedMesh) garment.push(o); });
+    if (!garment.length) return null;
+
+    for (const m of garment) {
+        m.bind(hostSkin.skeleton, hostSkin.bindMatrix);
+        m.castShadow = false;
+        m.userData.isGarment = true;
+        m.position.copy(hostSkin.position);
+        m.quaternion.copy(hostSkin.quaternion);
+        m.scale.copy(hostSkin.scale);
+        m.visible = false;
+        hostSkin.parent.add(m);   // out of the clone, into the host's hierarchy
     }
-    teeOnFoot = { mesh, mixer: mixer2, actions, current: null };
-    console.log('Tee knight: on-foot variant ready,', [...actions.keys()].join(', '));
+    return { garment, base };
 }
 
-function buildTeeOnBike() {
-    if (teeOnBike || !teeKnightTemplate || !bikeRider || !pendingBikeClips) return;
-    const crunches = THREE.AnimationClip.findByName(pendingBikeClips, 'crunches');
-    if (!crunches) return;
-
-    const mesh = SkeletonUtils.clone(teeKnightTemplate);
-    // Same skeleton and rest pose as bikeRider, so the orientation that
-    // tryBuildBikeRider worked so hard to derive can simply be copied.
-    mesh.position.copy(bikeRider.position);
-    mesh.quaternion.copy(bikeRider.quaternion);
-    mesh.scale.copy(bikeRider.scale);
-    mesh.visible = false;
-    bikeRider.parent.add(mesh);
-
-    const retargeted = retargetClips([crunches], mesh)[0];
-    const rotationOnly = new THREE.AnimationClip(
-        'bike-ride-tee',
-        retargeted.duration,
-        retargeted.tracks.filter(t => t.name.endsWith('.quaternion'))
-    );
-    const m = new THREE.AnimationMixer(mesh);
-    m.clipAction(rotationOnly).play();
-    teeOnBike = { mesh, mixer: m };
-    console.log('Tee knight: bike variant ready');
+// Attaches whatever has loaded but is not on this host yet. Cheap to call every
+// frame: once a garment is attached it is skipped, and both hosts arrive
+// asynchronously (the bike rider only exists once playerbike.glb has loaded).
+function dressRig(rig, host) {
+    if (!host) return rig;
+    for (const type of GARMENT_TYPES) {
+        if (!type.template) continue;
+        if (rig && rig.garments[type.key]) continue;
+        const attached = attachGarment(host, type.template);
+        if (!attached) continue;
+        if (!rig) rig = { base: attached.base, garments: {} };
+        rig.garments[type.key] = attached.garment;
+        console.log(`Garment "${type.key}": ${attached.garment.length} mesh(es) on ${host.name || 'host'} skeleton`);
+    }
+    return rig;
 }
 
-// Decides which of the four player meshes is on screen this frame: bare or
-// tee'd, on foot or on the bike.
+// Decides what the knight is wearing this frame, on foot and on the bike.
 function updatePlayerSkin() {
-    buildTeeOnFoot();
-    buildTeeOnBike();
+    footRig = dressRig(footRig, playerMesh);
+    bikeRig = dressRig(bikeRig, bikeRider);
 
-    const wearing = armor > 0;
-    const footTee = wearing && !!teeOnFoot;
-    const bikeTee = wearing && !!teeOnBike;
-
-    if (playerMesh)     playerMesh.visible     = !hasBike && !footTee;
-    if (teeOnFoot)      teeOnFoot.mesh.visible = !hasBike && footTee;
+    if (playerMesh)     playerMesh.visible     = !hasBike;
     if (playerBikeMesh) playerBikeMesh.visible = hasBike;   // hides its children too
-    if (bikeRider)      bikeRider.visible      = !bikeTee;
-    if (teeOnBike)      teeOnBike.mesh.visible = bikeTee;
 
-    // Follow the bare knight's clip and playhead exactly, so swapping mid-run
-    // continues the stride instead of restarting it.
-    if (teeOnFoot && teeOnFoot.mesh.visible) {
-        const name = currentAction ? currentAction.getClip().name : 'Idle';
-        const want = teeOnFoot.actions.get(name);
-        if (want && want !== teeOnFoot.current) {
-            if (teeOnFoot.current) teeOnFoot.current.stop();
-            want.reset().play();
-            teeOnFoot.current = want;
+    // A garment that replaces the whole knight takes the bare meshes off screen;
+    // one that is only extra geometry leaves them showing underneath.
+    let hideBase = false;
+    for (const type of GARMENT_TYPES) {
+        if (type.worn() && type.hidesBase) { hideBase = true; break; }
+    }
+
+    // Everything else — facing, stride, the pedalling pose — comes from the host
+    // skeleton the garment is bound to, which is the whole point of doing it
+    // this way rather than animating a second model.
+    for (const rig of [footRig, bikeRig]) {
+        if (!rig) continue;
+        for (const m of rig.base) m.visible = !hideBase;
+        for (const type of GARMENT_TYPES) {
+            const meshes = rig.garments[type.key];
+            if (meshes) for (const m of meshes) m.visible = type.worn();
         }
-        if (teeOnFoot.current && currentAction) teeOnFoot.current.time = currentAction.time;
-        teeOnFoot.mixer.update(0);   // apply the pose without advancing it
-    }
-    if (teeOnBike && teeOnBike.mesh.visible && bikeRiderMixer) {
-        teeOnBike.mixer.setTime(bikeRiderMixer.time);
     }
 
-    // The stitched-on garment and the tee'd model are two answers to the same
-    // question, so only one of them may ever be on screen.
-    if (teeOnFoot) {
+    // The stitched-on garment and a worn tee model answer the same question, so
+    // only one of them may ever be on screen.
+    if (footRig && footRig.garments.tee) {
         if (wornTeeInstance) wornTeeInstance.visible = false;
     } else {
         updateWornTee();
@@ -3653,7 +3718,13 @@ function damagePlayer(amount) {
     playerHitFlash = 0.35;
 
     if (armor > 0) {
-        armor = Math.max(0, armor - amount);
+        // Spend the belt before the shirt, so what comes off on screen matches
+        // what the counter just lost.
+        let left = amount;
+        const takeBelt = Math.min(armorBelt, left);
+        armorBelt -= takeBelt; left -= takeBelt;
+        armorTee = Math.max(0, armorTee - left);
+        armor = armorTee + armorBelt;
         return false;
     }
 
@@ -4243,9 +4314,11 @@ function animate() {
                 } else if (p.userData.type === 'drink') {
                     hasJumpBoost = true;
                 } else if (p.userData.type === 'armor_tee') {
-                    armor += 2;
+                    armorTee += 2;
+                    armor = armorTee + armorBelt;
                 } else if (p.userData.type === 'armor_belt') {
-                    armor += 1;
+                    armorBelt += 1;
+                    armor = armorTee + armorBelt;
                 }
 
                 removePowerup(i);

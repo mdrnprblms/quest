@@ -1047,6 +1047,11 @@ function loadLevel(mapName) {
                     if (child.geometry) child.geometry.computeBoundsTree();
 
                     colliderMeshes.push(child); // Buildings / Ground
+                    // Used by the nav grid to sample street height. Kept apart
+                    // from colliderMeshes because that also holds the Border
+                    // box, whose lid spans the whole map and would return a
+                    // height of ~366 for every cell.
+                    groundMeshes.push(child);
                     if (child.material) {
                         // Photogrammetry already has sunlight and shadow baked
                         // into its textures, so lighting it again is wrong: the
@@ -1210,6 +1215,8 @@ function tryBuildPlayer() {
     if (currentAction) currentAction.play();
 
     console.log('Player animations:', [...animationsMap.keys()].join(', '));
+
+    tryBuildBikeRider();   // the bike may already be loaded
 }
 
 // Retargeting fails silently — the model just stands frozen in bind pose. Sample
@@ -1281,6 +1288,80 @@ function findBone(root, name) {
         if (!found && baseBoneName(o.name) === want) found = o;
     });
     return found;
+}
+
+// --- KNIGHT ON THE BIKE ---
+// playerbike.glb ships its own rider: a 40,000-triangle copy of the old player
+// model skinned to the same 41 mixamorig bones, pedalling via the "crunches"
+// clip. We hide that rider and drive a knight with the same clip instead.
+//
+// Only the ROTATION tracks are reused. The two rigs are authored at different
+// unit scales (bike rider's bind skeleton spans 0.42, the knight's 1.76), so the
+// clip's position tracks would throw the knight metres off the saddle. Bone
+// rotations are scale-independent, which is what makes the pose transfer safely;
+// placement is then measured at runtime rather than hard-coded.
+let bikeRider = null;
+let bikeRiderMixer = null;
+let pendingBikeClips = null;
+
+function tryBuildBikeRider() {
+    if (bikeRider || !playerMesh || !playerBikeMesh || !pendingBikeClips) return;
+
+    const crunches = THREE.AnimationClip.findByName(pendingBikeClips, 'crunches');
+    if (!crunches) { console.warn('Bike: no "crunches" clip to drive the rider'); return; }
+
+    // Anchor on the original rider's skeleton before hiding it.
+    const riderHips = findBone(playerBikeMesh, 'mixamorig:Hips');
+    const riderTop  = findBone(playerBikeMesh, 'mixamorig:HeadTop_End');
+    if (!riderHips || !riderTop) { console.warn('Bike: rider skeleton not found'); return; }
+
+    playerBikeMesh.updateWorldMatrix(true, true);
+    const riderHipsW = new THREE.Vector3().setFromMatrixPosition(riderHips.matrixWorld);
+    const riderTopW  = new THREE.Vector3().setFromMatrixPosition(riderTop.matrixWorld);
+    const riderSpan  = riderHipsW.distanceTo(riderTopW);
+
+    // Hide the built-in rider — the mesh, not its skeleton, which still drives
+    // the wheels and pedals through bikeMixer.
+    playerBikeMesh.traverse(o => { if (o.isSkinnedMesh) o.visible = false; });
+
+    bikeRider = SkeletonUtils.clone(playerMesh);
+    bikeRider.position.set(0, 0, 0);
+    bikeRider.rotation.set(0, 0, 0);
+    bikeRider.scale.setScalar(1);
+    playerBikeMesh.add(bikeRider);
+
+    bikeRider.updateWorldMatrix(true, true);
+    const kHips = findBone(bikeRider, 'mixamorig:Hips');
+    const kTop  = findBone(bikeRider, 'mixamorig:HeadTop_End');
+    if (!kHips || !kTop) { console.warn('Bike: knight skeleton not found'); return; }
+
+    const kSpan = new THREE.Vector3().setFromMatrixPosition(kHips.matrixWorld)
+        .distanceTo(new THREE.Vector3().setFromMatrixPosition(kTop.matrixWorld));
+    const s = kSpan > 1e-6 ? riderSpan / kSpan : 1;
+    bikeRider.scale.setScalar(s);
+
+    // Nudge so the knight's hips land exactly where the rider's were.
+    bikeRider.updateWorldMatrix(true, true);
+    const kHipsW = new THREE.Vector3().setFromMatrixPosition(kHips.matrixWorld);
+    bikeRider.position.add(
+        playerBikeMesh.worldToLocal(riderHipsW.clone())
+            .sub(playerBikeMesh.worldToLocal(kHipsW.clone()))
+    );
+
+    const retargeted = retargetClips([crunches], bikeRider)[0];
+    const rotationOnly = new THREE.AnimationClip(
+        'bike-ride',
+        retargeted.duration,
+        retargeted.tracks.filter(t => t.name.endsWith('.quaternion'))
+    );
+
+    bikeRiderMixer = new THREE.AnimationMixer(bikeRider);
+    bikeRiderMixer.clipAction(rotationOnly).play();
+
+    console.log(
+        `Bike rider: knight scaled ${s.toFixed(3)} (rider span ${riderSpan.toFixed(3)} / ` +
+        `knight ${kSpan.toFixed(3)}), ${rotationOnly.tracks.length} rotation tracks`
+    );
 }
 
 // Shows/hides the tee to match armour state. Built lazily on first pickup so we
@@ -1405,6 +1486,9 @@ loader.load('playerbike.glb', (gltf) => {
         });
     }
 
+    pendingBikeClips = gltf.animations;
+    tryBuildBikeRider();   // the knight may already be loaded
+
 }, undefined, (err) => console.error("Player Bike Error:", err));
 
 // --- ENEMY LOADER ---
@@ -1502,6 +1586,25 @@ new THREE.TextureLoader().load('belt_texture.png', (tex) => {
 
     console.log(`Belt: procedural ring r=${BELT_RADIUS} h=${height.toFixed(2)} from ${imgW}x${imgH} texture`);
 });
+
+window.mqBikeInfo = () => bikeRider ? {
+    built: true,
+    scale: +bikeRider.scale.x.toFixed(4),
+    pos: bikeRider.position.toArray().map(v=>+v.toFixed(2)),
+    // Count visible skinned meshes that are NOT part of the knight we added.
+    originalRiderHidden: (() => {
+        const mine = new Set();
+        bikeRider.traverse(o => mine.add(o));
+        let hidden = true;
+        playerBikeMesh.traverse(o => {
+            if (o.isSkinnedMesh && !mine.has(o) && o.visible) hidden = false;
+        });
+        return hidden;
+    })(),
+    playing: bikeRiderMixer ? bikeRiderMixer._actions.filter(a=>a.isRunning()).length : 0
+ } : { built: false };
+
+window.mqDebugBike = (on) => { hasBike = !!on; };
 
 window.mqBeltInfo = () => beltTemplate ? {
     built: true,
@@ -1670,9 +1773,9 @@ function buildNavGrid() {
     const meshesToScan  = useRoadMeshes ? roadMeshes : colliderMeshes;
     if (meshesToScan.length === 0) return;
 
-    // Tighter Y band when using colliders so building rooftops aren't treated as roads.
-    const minY = useRoadMeshes ? -10 : -2;
-    const maxY = useRoadMeshes ?  10 :  5;
+    // Only the collider fallback needs a Y band, to stop rooftops counting as
+    // road. DATA_ROAD meshes must NOT be Y-filtered — see below.
+    const FALLBACK_MIN_Y = -20, FALLBACK_MAX_Y = 12;
 
     const grid    = new Uint8Array(NAV_DIM * NAV_DIM);
     const heights = new Float32Array(NAV_DIM * NAV_DIM);
@@ -1680,22 +1783,66 @@ function buildNavGrid() {
     const rc      = new THREE.Raycaster();
     rc.firstHitOnly = true;
 
+    // Must start above the tallest geometry. Shoreditch reaches world Y ~590,
+    // so the previous origin of 500 began *inside* the map.
+    const RAY_TOP = 2000;
+
+    // Height is sampled from city geometry only — colliderMeshes also contains
+    // the Border box, whose lid would answer for every cell.
+    const heightMeshes = groundMeshes.length > 0 ? groundMeshes : colliderMeshes;
+
+    let noHeight = 0;
+
     for (let gz = 0; gz < NAV_DIM; gz++) {
         for (let gx = 0; gx < NAV_DIM; gx++) {
             const wx = -NAV_HALF + gx * NAV_CELL + NAV_CELL * 0.5;
             const wz = -NAV_HALF + gz * NAV_CELL + NAV_CELL * 0.5;
-            rc.set(new THREE.Vector3(wx, 500, wz), down);
+            const i  = gz * NAV_DIM + gx;
+            const origin = new THREE.Vector3(wx, RAY_TOP, wz);
+
+            rc.set(origin, down);
             const hits = rc.intersectObjects(meshesToScan, false);
-            if (hits.length > 0 && hits[0].point.y > minY && hits[0].point.y < maxY) {
-                grid[gz * NAV_DIM + gx] = 1;
-                heights[gz * NAV_DIM + gx] = hits[0].point.y;
+            if (hits.length === 0) continue;
+
+            if (!useRoadMeshes) {
+                if (hits[0].point.y > FALLBACK_MIN_Y && hits[0].point.y < FALLBACK_MAX_Y) {
+                    grid[i] = 1;
+                    heights[i] = hits[0].point.y;
+                }
+                continue;
+            }
+
+            // DATA_ROADS is a guidance layer, deliberately parked below the city
+            // so it can be lined up in Blender (world Y ~-350 on shoreditch). It
+            // answers "is there road here in XZ" — its own height is meaningless.
+            // Y-filtering it rejected every single cell, which is why the grid
+            // came out empty and navigation always fell back to a straight line.
+            grid[i] = 1;
+
+            // Height therefore has to come from the street surface above it, or
+            // waypoints land 350 units underground and the trail is invisible.
+            rc.set(origin, down);
+            const ground = rc.intersectObjects(heightMeshes, false);
+            if (ground.length > 0) {
+                heights[i] = ground[0].point.y;
+            } else {
+                heights[i] = 0;
+                noHeight++;
             }
         }
     }
+
     navGrid = grid;
     navHeightGrid = heights;
     const roadCells = grid.reduce((s, v) => s + v, 0);
-    console.log(`Nav grid built: ${NAV_DIM}x${NAV_DIM}, road cells: ${roadCells} (source: ${useRoadMeshes ? 'DATA_ROAD meshes' : 'collider fallback'})`);
+    console.log(
+        `Nav grid built: ${NAV_DIM}x${NAV_DIM}, road cells: ${roadCells}` +
+        ` (source: ${useRoadMeshes ? 'DATA_ROAD meshes' : 'collider fallback'})` +
+        (noHeight ? `, ${noHeight} without a ground sample` : '')
+    );
+    if (roadCells === 0) {
+        console.warn('Nav grid has no road cells — navigation will fall back to straight lines.');
+    }
 }
 
 function worldToCell(wx, wz) {
@@ -2309,7 +2456,8 @@ function animate() {
     
     // Update Player Animations (Human or Bike)
     if (hasBike && bikeMixer) {
-        bikeMixer.update(delta);
+        bikeMixer.update(delta);          // wheels, pedals, frame
+        if (bikeRiderMixer) bikeRiderMixer.update(delta);  // the knight pedalling
     } else if (playerMesh && mixer) {
         mixer.update(delta);
     }

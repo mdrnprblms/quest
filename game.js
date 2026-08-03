@@ -1964,6 +1964,12 @@ window.mqPlayerInfo = () => {
         scale: +playerMesh.scale.x.toFixed(3),
         boneName: bone ? bone.name : null,
         clips: [...animationsMap.keys()],
+        teeKnight: {
+            loaded: !!teeKnightTemplate,
+            onFoot: !!teeOnFoot,
+            onBike: !!teeOnBike,
+            showing: !!(teeOnFoot && teeOnFoot.mesh.visible)
+        },
         current: currentAction ? currentAction.getClip().name : null,
         running: currentAction ? currentAction.isRunning() : false,
         boneQ: bone ? bone.quaternion.toArray().map(v => +v.toFixed(4)) : null,
@@ -2326,6 +2332,145 @@ function updateWornTee() {
     }
 
     if (wornTeeInstance) wornTeeInstance.visible = shouldWear && !hasBike;
+}
+
+// --- TEE KNIGHT -------------------------------------------------------------
+// A whole second knight model that already has the shirt on, shown instead of
+// the bare one while the player is carrying tee armour, and dropped the moment
+// the armour is punched off.
+//
+// It works as a swap rather than a garment because it shares the base knight's
+// skeleton exactly — same joint names, same rest pose — so the same retargeted
+// clips drive it and, on the bike, the alignment already solved for bikeRider
+// transfers across untouched.
+//
+// The two models are NOT kept in sync by running two mixers over the same
+// clips: floating point drift would let them slide apart, and a swap mid-stride
+// would pop. The bare knight's mixer stays authoritative and this one is told
+// what time it is, so a swap lands on exactly the same frame of the same clip.
+// In preference order. The first is the one to use: 549 vertices against the
+// bare knight's 532, so wearing the shirt costs essentially nothing and it
+// keeps the PS1 silhouette the rest of the game is drawn in.
+// The others are fallbacks for the sculpt export, which is 609,841 vertices —
+// 1,100x the model it replaces, and skinned, where cost scales with vertex
+// count. tools/optimize-assets.mjs has a job that takes it to 188k if it is
+// ever the only one available.
+const TEE_KNIGHT_FILES = [
+    'knight_with_tee.glb',         // 549 verts, 264KB
+    'knight_tee.glb',              // optimised sculpt: 188k verts, 8.2MB
+    'knight with tee test.glb'     // raw sculpt export: 610k verts, 30.5MB
+];
+let teeKnightTemplate = null;
+let teeOnFoot = null;   // { mesh, mixer, actions, current }
+let teeOnBike = null;   // { mesh, mixer }
+
+function loadTeeKnight(i = 0) {
+    if (i >= TEE_KNIGHT_FILES.length) {
+        console.log('Tee knight: no model found — falling back to the worn-tee attachment');
+        return;
+    }
+    const file = TEE_KNIGHT_FILES[i];
+    // encodeURI because the raw export has spaces in its filename.
+    loader.load(encodeURI(file), (gltf) => {
+        teeKnightTemplate = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR });
+        teeKnightTemplate.traverse(o => {
+            if (o.isMesh && o.material) {
+                o.material.metalness = 0.0;
+                o.material.roughness = 0.9;
+            }
+        });
+        console.log('Tee knight: loaded', file);
+    }, undefined, () => loadTeeKnight(i + 1));
+}
+loadTeeKnight();
+
+function buildTeeOnFoot() {
+    if (teeOnFoot || !teeKnightTemplate || !playerMesh || !npcClips) return;
+
+    const mesh = SkeletonUtils.clone(teeKnightTemplate);
+    mesh.scale.copy(playerMesh.scale);
+    mesh.rotation.copy(playerMesh.rotation);
+    mesh.position.copy(playerMesh.position);
+    mesh.visible = false;
+    playerGroup.add(mesh);
+
+    const mixer2 = new THREE.AnimationMixer(mesh);
+    const actions = new Map();
+    for (const clip of retargetClips(npcClips, mesh)) {
+        if (['Idle', 'Run', 'Jump', 'Punch'].includes(clip.name)) {
+            actions.set(clip.name, mixer2.clipAction(clip));
+        }
+    }
+    teeOnFoot = { mesh, mixer: mixer2, actions, current: null };
+    console.log('Tee knight: on-foot variant ready,', [...actions.keys()].join(', '));
+}
+
+function buildTeeOnBike() {
+    if (teeOnBike || !teeKnightTemplate || !bikeRider || !pendingBikeClips) return;
+    const crunches = THREE.AnimationClip.findByName(pendingBikeClips, 'crunches');
+    if (!crunches) return;
+
+    const mesh = SkeletonUtils.clone(teeKnightTemplate);
+    // Same skeleton and rest pose as bikeRider, so the orientation that
+    // tryBuildBikeRider worked so hard to derive can simply be copied.
+    mesh.position.copy(bikeRider.position);
+    mesh.quaternion.copy(bikeRider.quaternion);
+    mesh.scale.copy(bikeRider.scale);
+    mesh.visible = false;
+    bikeRider.parent.add(mesh);
+
+    const retargeted = retargetClips([crunches], mesh)[0];
+    const rotationOnly = new THREE.AnimationClip(
+        'bike-ride-tee',
+        retargeted.duration,
+        retargeted.tracks.filter(t => t.name.endsWith('.quaternion'))
+    );
+    const m = new THREE.AnimationMixer(mesh);
+    m.clipAction(rotationOnly).play();
+    teeOnBike = { mesh, mixer: m };
+    console.log('Tee knight: bike variant ready');
+}
+
+// Decides which of the four player meshes is on screen this frame: bare or
+// tee'd, on foot or on the bike.
+function updatePlayerSkin() {
+    buildTeeOnFoot();
+    buildTeeOnBike();
+
+    const wearing = armor > 0;
+    const footTee = wearing && !!teeOnFoot;
+    const bikeTee = wearing && !!teeOnBike;
+
+    if (playerMesh)     playerMesh.visible     = !hasBike && !footTee;
+    if (teeOnFoot)      teeOnFoot.mesh.visible = !hasBike && footTee;
+    if (playerBikeMesh) playerBikeMesh.visible = hasBike;   // hides its children too
+    if (bikeRider)      bikeRider.visible      = !bikeTee;
+    if (teeOnBike)      teeOnBike.mesh.visible = bikeTee;
+
+    // Follow the bare knight's clip and playhead exactly, so swapping mid-run
+    // continues the stride instead of restarting it.
+    if (teeOnFoot && teeOnFoot.mesh.visible) {
+        const name = currentAction ? currentAction.getClip().name : 'Idle';
+        const want = teeOnFoot.actions.get(name);
+        if (want && want !== teeOnFoot.current) {
+            if (teeOnFoot.current) teeOnFoot.current.stop();
+            want.reset().play();
+            teeOnFoot.current = want;
+        }
+        if (teeOnFoot.current && currentAction) teeOnFoot.current.time = currentAction.time;
+        teeOnFoot.mixer.update(0);   // apply the pose without advancing it
+    }
+    if (teeOnBike && teeOnBike.mesh.visible && bikeRiderMixer) {
+        teeOnBike.mixer.setTime(bikeRiderMixer.time);
+    }
+
+    // The stitched-on garment and the tee'd model are two answers to the same
+    // question, so only one of them may ever be on screen.
+    if (teeOnFoot) {
+        if (wornTeeInstance) wornTeeInstance.visible = false;
+    } else {
+        updateWornTee();
+    }
 }
 
 loader.load('playermodel.glb', (gltf) => {
@@ -4429,12 +4574,8 @@ function animate() {
 
     
 
-// MODEL SWAP LOGIC
-    if (playerMesh && playerBikeMesh) {
-        playerMesh.visible = !hasBike;
-        playerBikeMesh.visible = hasBike;
-    }
-    updateWornTee();
+// MODEL SWAP LOGIC — bare/tee'd knight, on foot or on the bike
+    updatePlayerSkin();
 
     // Sun frustum and contact shadows both key off the player's final position
     // for this frame, so they run after all movement is resolved.

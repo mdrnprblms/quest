@@ -75,6 +75,12 @@ const JOBS = [
     { file: 'limebike.glb',   simplifyRatio: 0.4,  error: 0.02,  textureSize: 1024 },
     { file: 'playerbike.glb', simplifyRatio: 0.4,  error: 0.02,  textureSize: 1024 },
     { file: 'playermodel.glb',simplifyRatio: 0.6,  error: 0.02,  textureSize: 1024 },
+    // The tee knight ships at 609,841 vertices against the base knight's 532 —
+    // it is a sculpt export, not a game model, and it is on screen every frame
+    // as a SKINNED mesh, where cost scales directly with vertex count. 0.02
+    // keeps ~12k verts, still 20x the model it stands in for.
+    { file: 'knight with tee test.glb', out: 'knight_tee.glb',
+                              simplifyRatio: 0.02, error: 0.015, textureSize: 1024 },
     { file: 'monster_zero_ultra.glb', simplifyRatio: 1.0, error: 0.01, textureSize: 512 },
 ];
 
@@ -327,7 +333,10 @@ async function processFile(job, src) {
             await doc.transform(dedup(), prune());
         }
 
-        const dst = path.join(OUT, job.file);
+        // `out` lets a job be renamed on the way through — handy when the source
+        // was exported with spaces in its filename, which have to be percent
+        // encoded everywhere they are then referenced.
+        const dst = path.join(OUT, job.out || job.file);
         await io.write(dst, doc);
 
         const afterBytes = fs.statSync(dst).size;

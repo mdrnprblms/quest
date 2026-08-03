@@ -447,6 +447,18 @@
         <p class="score-text" style="font-size: 20px; margin-bottom: 5px;">Deliveries: <span id="score" class="highlight">0</span></p>
         <p class="score-text" style="font-size: 18px; margin-top: 0; opacity: 0.9;">Time Left: <span id="timer" class="highlight">60.0</span>s</p>
 
+        <div id="health-wrap" style="margin-top: 8px; width: 190px;">
+            <div style="display: flex; justify-content: space-between; font-family: 'HelveticaBold', sans-serif;
+                        font-size: 12px; color: #fff; text-shadow: 2px 2px 4px #000; margin-bottom: 3px;">
+                <span>HEALTH</span><span id="health-count">15</span>
+            </div>
+            <div id="health-track" style="height: 12px; background: rgba(0,0,0,0.55);
+                        border: 2px solid rgba(255,255,255,0.85); border-radius: 2px; overflow: hidden;">
+                <div id="health-fill" style="height: 100%; width: 100%; background: #32CD32;
+                            transition: width 0.15s linear, background-color 0.15s linear;"></div>
+            </div>
+        </div>
+
         <div id="status-panel" style="margin-top: 10px; font-family: 'HelveticaBold', sans-serif; font-size: 14px;">
             <div id="status-bike" style="color: #32CD32; display: none; text-shadow: 2px 2px 4px #000;">
                 [ LIME BIKE ACTIVE ]

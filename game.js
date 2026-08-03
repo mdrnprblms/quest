@@ -104,9 +104,59 @@ let cameraAngle = 0;
 const cameraRotationSpeed = 0.03;
 const currentLookAt = new THREE.Vector3(0, 0, 0);
 
-let roamingNPCs = []; // civilian roamers
+let roamingNPCs = []; // civilian roamers — hostile once you get close
 const NPC_WALK_SPEED = 4.0;
 const MAX_ROAMING_NPCS = 8;
+
+// --- BRAWLING ---------------------------------------------------------------
+// NPCs wander until the player comes near, then close in and throw punches.
+// Aggro is deliberately shorter than the police vision cone: they're a nuisance
+// you can walk away from, not a second pursuit.
+const NPC_CHASE_SPEED     = 6.0;   // a shade slower than the player on foot
+const NPC_AGGRO_RADIUS    = 40;
+const NPC_LOSE_RADIUS     = 75;    // hysteresis, so they don't flicker in and out
+// Close enough to actually be in each other's faces. The knight stands ~4 units
+// tall, so anything much over 2.5 leaves a visible gap between the swing and
+// the player.
+const NPC_PUNCH_RANGE     = 2.4;
+const NPC_PUNCH_WINDUP    = 0.35;  // seconds into the swing before it lands
+const NPC_PUNCH_COOLDOWN  = 1.5;
+const NPC_MAX_HEALTH      = 3;     // punches to drop one
+const NPC_RESPAWN_DELAY   = 4000;  // ms
+
+const PLAYER_MAX_HEALTH      = 15; // punches the player can absorb
+const PLAYER_PUNCH_RANGE     = 3.4; // a touch longer than theirs, so you can trade
+const PLAYER_PUNCH_ARC       = 0.4; // dot product against facing; ~66 deg either side
+const PLAYER_PUNCH_COOLDOWN  = 0.4;
+const PLAYER_HIT_INVULN      = 0.8; // brief grace after a hit, so a crowd can't stunlock
+
+// --- TRAFFIC ----------------------------------------------------------------
+// Cars drive the same road graph the navigation arrow follows: findRoadPath()
+// already snaps to road cells and returns waypoints carrying the road surface
+// height, so a car just walks that list. Being hit ends the run.
+const CAR_FILES        = ['honda_jazz_ps1.glb', 'volkswagen_golf_ps1.glb'];
+const MAX_CARS         = 16;
+const CAR_SPEED_MIN    = 22;
+const CAR_SPEED_MAX    = 34;
+const CAR_SPAWN_MIN    = 140;   // spawn ring around the player, world units
+const CAR_SPAWN_MAX    = 420;
+const CAR_DESPAWN_DIST = 700;
+const CAR_HIT_RADIUS   = 4.5;
+const CAR_LENGTH       = 8.0;   // target size along the direction of travel
+const CAR_LANE_OFFSET  = 3.5;   // shifted off the road centreline, so both
+                                // directions aren't driving down the same line
+const CAR_SPAWN_RATE   = 0.5;   // seconds between attempts, until MAX_CARS
+const CAR_RAY_HEIGHT   = 10;    // how far above itself a car looks for the road
+const CAR_GROUND_SNAP  = 12;    // lerp rate onto the surface; stiffer than the
+                                // NPCs' since cars cover ground much faster
+let carTemplates = [];
+let cars = [];
+let carSpawnTimer = 0;
+
+let playerHealth = PLAYER_MAX_HEALTH;
+let playerPunchTimer = 0;   // counts down; player can punch at <= 0
+let playerHurtTimer = 0;    // counts down; invulnerable while > 0
+let playerHitFlash = 0;     // drives the HUD flash
 
 window.returnToMenu = () => {
     gameActive = false; // Pause the game in the background
@@ -124,10 +174,23 @@ window.resetGame = () => {
     timeLeft = START_TIME;
     gameActive = true;
     isBusted = false;
+    gameOverReason = 'time';
     isPaused = false;
     hasBike = false;
     hasJumpBoost = false;
     spawnTimer = 0;
+    playerHealth = PLAYER_MAX_HEALTH;
+    playerPunchTimer = 0;
+    playerHurtTimer = 0;
+    playerHitFlash = 0;
+
+    // Clear the crowd and the traffic — fresh sets are spawned around the new
+    // start position in step 6, once the player has been moved.
+    roamingNPCs.forEach(npc => scene.remove(npc.mesh));
+    roamingNPCs = [];
+    cars.forEach(c => scene.remove(c.mesh));
+    cars = [];
+    carSpawnTimer = 0;
 
     // 2. Reset Player Model Visibility
     if (playerMesh) playerMesh.visible = true;
@@ -160,6 +223,8 @@ window.resetGame = () => {
     spawnBeacon();
 
     for (let i = 0; i < 8; i++) spawnPowerup();
+    for (let i = 0; i < 5; i++) spawnRoamingNPC();
+    for (let i = 0; i < MAX_CARS; i++) spawnCar();
 
     // 7. Hide UI
     const uiGameOver = document.getElementById('game-over');
@@ -350,6 +415,8 @@ let hasJumpBoost = false;
 let isMapOpen = false; 
 let spawnTimer = 0; 
 let isBusted = false;
+// Which end-of-run screen to show: 'time' | 'busted' | 'runover'.
+let gameOverReason = 'time';
 
 // PHYSICS STATE
 let verticalVelocity = 0;
@@ -430,6 +497,20 @@ function updateUI() {
         uiTimer.innerText = timeLeft.toFixed(1);
         uiTimer.className = timeLeft < 10 ? "danger" : "highlight";
     }
+
+    const healthFill = document.getElementById('health-fill');
+    const healthCount = document.getElementById('health-count');
+    if (healthFill) {
+        const frac = Math.max(0, playerHealth) / PLAYER_MAX_HEALTH;
+        healthFill.style.width = (frac * 100).toFixed(1) + '%';
+        // Flashes white on the frame a punch lands, so a hit reads even when
+        // the bar barely moves.
+        healthFill.style.backgroundColor = playerHitFlash > 0 ? '#ffffff'
+            : frac > 0.5 ? '#32CD32' : frac > 0.25 ? '#FFD700' : '#FF3B30';
+    }
+    if (healthCount) healthCount.innerText = armor > 0
+        ? `${Math.max(0, playerHealth)} +${armor}🛡️`
+        : `${Math.max(0, playerHealth)}`;
     
     if (uiDrink && uiBike) {
         if (hasBike) uiBike.style.display = 'block';
@@ -456,8 +537,12 @@ function updateUI() {
 
             // We use innerHTML so we can add the button
             // We add a check so we don't redraw the button 60 times a second (flickering)
-            const titleText = isBusted ? "BUSTED" : "SHIFT ENDED";
-            const color = isBusted ? "#0088ff" : "#ff3333";
+            const titleText = gameOverReason === 'runover' ? "RUN OVER"
+                            : gameOverReason === 'busted'  ? "BUSTED"
+                            : "SHIFT ENDED";
+            const color = gameOverReason === 'runover' ? "#ffcc00"
+                        : gameOverReason === 'busted'  ? "#0088ff"
+                        : "#ff3333";
             
             // Only update HTML if it's different to prevent resetting the button state
             if (!uiGameOver.getAttribute('data-shown')) {
@@ -1015,6 +1100,10 @@ function loadLevel(mapName) {
     roamingNPCs.forEach(n => scene.remove(n.mesh));
     roamingNPCs = [];
 
+    // Traffic is routed against the old nav grid, so it can't survive a map swap.
+    cars.forEach(c => scene.remove(c.mesh));
+    cars = [];
+
     loader.load(mapName, (gltf) => {
         const map = gltf.scene;
         map.scale.set(3.5, 3.5, 3.5);
@@ -1094,6 +1183,10 @@ function loadLevel(mapName) {
 
         // Spawn initial roaming NPCs
         for (let i = 0; i < 5; i++) spawnRoamingNPC();
+
+        // Seed traffic. Needs buildNavGrid() above it — cars route on the same
+        // road graph the navigation trail uses.
+        for (let i = 0; i < MAX_CARS; i++) spawnCar();
 
         // Seed the pickup budget; the rest trickle in around the player as they ride.
         for (let i = 0; i < 8; i++) spawnPowerup();
@@ -1241,6 +1334,34 @@ window.mqPlayerInfo = () => {
 // Test hook: armour normally only changes by collecting a pickup.
 window.mqDebugArmor = (n) => { armor = n; };
 
+window.mqCombatInfo = () => ({
+    playerHealth,
+    maxHealth: PLAYER_MAX_HEALTH,
+    armor,
+    gameActive,
+    isBusted,
+    punchCooldown: +playerPunchTimer.toFixed(2),
+    npcs: roamingNPCs.map(n => ({
+        state: n.state,
+        health: n.health,
+        dist: +n.mesh.position.distanceTo(playerGroup.position).toFixed(1),
+        swinging: n.windup >= 0
+    }))
+});
+
+// Test hook: drops an NPC in the player's face so a brawl can be exercised
+// without walking one down first.
+window.mqDebugPickFight = () => {
+    const npc = roamingNPCs[0];
+    if (!npc) return false;
+    // In front of the player, not beside him — the punch arc is a cone around
+    // the camera's facing, so a target off to the side is unhittable by design.
+    const facing = new THREE.Vector3(Math.sin(cameraAngle), 0, Math.cos(cameraAngle));
+    npc.mesh.position.copy(playerGroup.position).addScaledVector(facing, 3.0);
+    npc.state = 'CHASE';
+    return true;
+};
+
 // Reports where the tee actually ends up. Box3.setFromObject is useless on a
 // SkinnedMesh — it reads bind-space geometry and ignores the bones — so this
 // walks real vertices through getVertexPosition(), which does apply them.
@@ -1344,6 +1465,7 @@ function findBone(root, name) {
 // placement is then measured at runtime rather than hard-coded.
 let bikeRider = null;
 let bikeRiderMixer = null;
+let bikeAlignResidual = null;   // diagnostic, filled in by tryBuildBikeRider
 let pendingBikeClips = null;
 
 function tryBuildBikeRider() {
@@ -1410,6 +1532,14 @@ function tryBuildBikeRider() {
     // identically, then align spine-up and shoulder-across between them. That is
     // measured from where the bones actually are, so it does not care how either
     // rig chose to orient its joints.
+    // Both skeletons have to be in the SAME pose for the comparison to mean
+    // anything. The bike's own actions aren't started until the player picks one
+    // up, so at this point its rider is still in bind pose — comparing a
+    // crunching knight against a T-posed rider is what left him a quarter turn
+    // out. Drive the rider with the same clip first, then put it back.
+    const riderPose = bikeMixer ? bikeMixer.clipAction(crunches) : null;
+    const riderWasRunning = riderPose ? riderPose.isRunning() : false;
+    if (riderPose && !riderWasRunning) riderPose.reset().play();
     if (bikeMixer) bikeMixer.setTime(0);
     bikeRiderMixer.setTime(0);
     playerBikeMesh.updateWorldMatrix(true, true);
@@ -1449,6 +1579,25 @@ function tryBuildBikeRider() {
         playerBikeMesh.worldToLocal(posOf(riderHips))
             .sub(playerBikeMesh.worldToLocal(posOf(kHips)))
     );
+
+    // Residual check, taken while both skeletons are still driven by the same
+    // clip at the same time — the only moment the two are directly comparable.
+    // (In play the bike's own actions pause when the player stops pedalling, so
+    // a later comparison would measure animation phase, not orientation.)
+    if (kLSh && kRSh) {
+        bikeRider.updateWorldMatrix(true, true);
+        const upR = posOf(riderTop).sub(posOf(riderHips)).normalize();
+        const upK = posOf(kTop).sub(posOf(kHips)).normalize();
+        const acR = posOf(riderRSh).sub(posOf(riderLSh)).normalize();
+        const acK = posOf(kRSh).sub(posOf(kLSh)).normalize();
+        bikeAlignResidual = {
+            upDeg: +THREE.MathUtils.radToDeg(upR.angleTo(upK)).toFixed(1),
+            acrossDeg: +THREE.MathUtils.radToDeg(acR.angleTo(acK)).toFixed(1)
+        };
+        console.log(`Bike rider: residual up ${bikeAlignResidual.upDeg}deg, across ${bikeAlignResidual.acrossDeg}deg`);
+    }
+
+    if (riderPose && !riderWasRunning) riderPose.stop();
 
     console.log(
         `Bike rider: knight scaled ${s.toFixed(3)} (rider span ${riderSpan.toFixed(3)} / ` +
@@ -1684,6 +1833,7 @@ window.mqBikeInfo = () => bikeRider ? {
     built: true,
     scale: +bikeRider.scale.x.toFixed(4),
     pos: bikeRider.position.toArray().map(v=>+v.toFixed(2)),
+    alignResidual: bikeAlignResidual,
     // Count visible skinned meshes that are NOT part of the knight we added.
     originalRiderHidden: (() => {
         const mine = new Set();
@@ -2230,24 +2380,307 @@ function spawnRoamingNPC() {
 
     // NPCs use playermodel's clips directly — same skeleton, no retarget needed.
     const npcMixer = new THREE.AnimationMixer(mesh);
-    const idleClip = THREE.AnimationClip.findByName(npcClips, 'Idle');
-    const runClip  = THREE.AnimationClip.findByName(npcClips, 'Run');
+    const idleClip  = THREE.AnimationClip.findByName(npcClips, 'Idle');
+    const runClip   = THREE.AnimationClip.findByName(npcClips, 'Run');
+    const punchClip = THREE.AnimationClip.findByName(npcClips, 'Punch');
     if (!idleClip || !runClip) return;
 
     const idleAction = npcMixer.clipAction(idleClip);
     const runAction  = npcMixer.clipAction(runClip);
+    let punchAction = null;
+    if (punchClip) {
+        punchAction = npcMixer.clipAction(punchClip);
+        punchAction.setLoop(THREE.LoopOnce);
+        punchAction.clampWhenFinished = true;
+    }
     idleAction.play();
 
     const target = getAnywhereSpawnPoint(pos, 20, 80) || pos.clone();
 
     roamingNPCs.push({
         mesh, mixer: npcMixer,
-        idleAction, runAction,
+        idleAction, runAction, punchAction,
         currentAction: idleAction,
         target,
         waitTimer: 0,
-        state: 'WALK'
+        state: 'WALK',
+        health: NPC_MAX_HEALTH,
+        punchTimer: 0,      // cooldown between swings
+        windup: -1,         // >= 0 while a thrown punch is travelling
+        hitFlash: 0         // seconds of red tint remaining
     });
+}
+
+// --- TRAFFIC -----------------------------------------------------------------
+
+for (const file of CAR_FILES) {
+    loader.load(file, (gltf) => {
+        const model = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR, castShadow: false });
+
+        // Normalise to a consistent road-car size and work out which way the
+        // model faces, so the two GLBs don't need to agree with each other.
+        const box = new THREE.Box3().setFromObject(model);
+        const size = box.getSize(new THREE.Vector3());
+        const longest = Math.max(size.x, size.z) || 1;
+        const scale = CAR_LENGTH / longest;
+        model.scale.multiplyScalar(scale);
+
+        // These two models don't agree on where their origin is: the Jazz sits
+        // on its wheels (minY 0.004) while the Golf's pivot is mid-body
+        // (minY -3.353), which buried it in the road. Carry the offset from the
+        // origin down to the lowest point so either can be planted on a surface.
+        const lift = -box.min.y * scale;
+
+        // Cars are driven along +Z; if the model is longest on X it's built
+        // side-on and needs a quarter turn.
+        carTemplates.push({ model, lift, yawFix: size.x > size.z ? Math.PI / 2 : 0 });
+        console.log(
+            `Traffic: loaded ${file} (${size.x.toFixed(1)} x ${size.z.toFixed(1)} ` +
+            `-> scaled ${scale.toFixed(3)}, ride height offset ${lift.toFixed(3)})`
+        );
+    }, undefined, (err) => console.error(`Traffic: failed to load ${file}`, err));
+}
+
+// Picks a route across the road graph starting somewhere near the player.
+function pickCarRoute(from) {
+    const start = getAnywhereSpawnPoint(from, CAR_SPAWN_MIN, CAR_SPAWN_MAX);
+    if (!start) return null;
+    const dest = getAnywhereSpawnPoint(start, 300, 1200);
+    if (!dest) return null;
+    const path = findRoadPath(start, dest);
+    return path && path.length >= 3 ? path : null;
+}
+
+function spawnCar() {
+    if (!carTemplates.length || !navGrid || cars.length >= MAX_CARS) return;
+
+    const path = pickCarRoute(playerGroup.position);
+    if (!path) return;
+
+    const template = carTemplates[Math.floor(Math.random() * carTemplates.length)];
+    const mesh = template.model.clone(true);
+    mesh.position.copy(path[0]);
+    mesh.position.y += template.lift;   // so it isn't buried on its first frame
+    scene.add(mesh);
+
+    cars.push({
+        mesh,
+        yawFix: template.yawFix,
+        lift: template.lift,
+        path,
+        index: 1,
+        // The car's position on the road centreline. The mesh is drawn offset
+        // from it, so the lane shift can't accumulate frame to frame.
+        pos: path[0].clone(),
+        speed: CAR_SPEED_MIN + Math.random() * (CAR_SPEED_MAX - CAR_SPEED_MIN),
+        lane: Math.random() < 0.5 ? -CAR_LANE_OFFSET : CAR_LANE_OFFSET
+    });
+}
+
+// Shortest distance from a point to the segment a->b. Used so a car sweeps its
+// whole step against the player rather than testing a single position.
+const _segAB = new THREE.Vector3(), _segAP = new THREE.Vector3(), _segClosest = new THREE.Vector3();
+function distanceToSegment(point, a, b) {
+    _segAB.subVectors(b, a);
+    const lenSq = _segAB.lengthSq();
+    if (lenSq < 1e-9) return point.distanceTo(a);
+    _segAP.subVectors(point, a);
+    const t = THREE.MathUtils.clamp(_segAP.dot(_segAB) / lenSq, 0, 1);
+    _segClosest.copy(a).addScaledVector(_segAB, t);
+    return point.distanceTo(_segClosest);
+}
+
+function removeCar(i) {
+    scene.remove(cars[i].mesh);
+    cars.splice(i, 1);
+}
+
+function updateTraffic(delta) {
+    for (let i = cars.length - 1; i >= 0; i--) {
+        const car = cars[i];
+
+        // Route exhausted, or wandered too far to be worth simulating: recycle.
+        if (car.index >= car.path.length ||
+            car.mesh.position.distanceTo(playerGroup.position) > CAR_DESPAWN_DIST) {
+            removeCar(i);
+            continue;
+        }
+
+        const target = car.path[car.index];
+        const to = new THREE.Vector3().subVectors(target, car.pos);
+        to.y = 0;
+        const dist = to.length();
+
+        if (dist < 2.0) { car.index++; continue; }
+
+        to.normalize();
+        const wasAt = car.mesh.position.clone();
+
+        car.pos.addScaledVector(to, car.speed * delta);
+
+        // Face along travel, drawn one lane to the right of the centreline so
+        // opposing traffic doesn't share a line.
+        const side = new THREE.Vector3(to.z, 0, -to.x);
+        car.mesh.position.copy(car.pos).addScaledVector(side, car.lane);
+        car.mesh.rotation.set(0, Math.atan2(to.x, to.z) + car.yawFix, 0);
+
+        // Sit on the surface the same way the player and NPCs do. The nav grid
+        // only stores one height per 20-unit cell, so riding those values alone
+        // left cars floating over crests and sunk into dips between waypoints.
+        // Cast from the lane position, not the centreline — that's where the
+        // wheels actually are.
+        const surfaces = groundMeshes.length > 0 ? groundMeshes : colliderMeshes;
+        raycaster.set(
+            new THREE.Vector3(car.mesh.position.x, car.pos.y + CAR_RAY_HEIGHT, car.mesh.position.z),
+            downVector
+        );
+        const ground = raycaster.intersectObjects(surfaces, false);
+        const surfaceY = ground.length > 0 ? ground[0].point.y : target.y;
+        car.pos.y = THREE.MathUtils.lerp(car.pos.y, surfaceY, CAR_GROUND_SNAP * delta);
+        car.mesh.position.y = car.pos.y + car.lift;
+
+        // Swept against the whole step, not just the end point. At 34 units/s a
+        // dropped frame moves a car further than its own length, so a point test
+        // would let it pass clean through the player.
+        if (gameActive && distanceToSegment(playerGroup.position, wasAt, car.mesh.position) < CAR_HIT_RADIUS) {
+            gameActive = false;
+            isBusted = false;
+            gameOverReason = 'runover';
+            if (currentAction) currentAction.stop();
+        }
+    }
+}
+
+// Test hook: drives the nearest car onto the player, to exercise RUN OVER
+// without waiting to be hit by chance.
+window.mqDebugRunOver = () => {
+    if (!cars.length) return false;
+    const car = cars[0];
+    car.lane = 0;                       // otherwise it passes to one side
+    car.pos.copy(playerGroup.position);
+    car.mesh.position.copy(playerGroup.position);
+    return true;
+};
+
+window.mqGameOverReason = () => gameOverReason;
+
+window.mqTrafficInfo = () => {
+    // `gap` measures each car's underside against the surface directly beneath
+    // it: ~0 means planted, negative means sunk into the road.
+    const surfaces = groundMeshes.length > 0 ? groundMeshes : colliderMeshes;
+    return {
+        templates: carTemplates.length,
+        cars: cars.length,
+        detail: cars.map(c => {
+            const box = new THREE.Box3().setFromObject(c.mesh);
+            raycaster.set(
+                new THREE.Vector3(c.mesh.position.x, c.mesh.position.y + CAR_RAY_HEIGHT, c.mesh.position.z),
+                downVector
+            );
+            const hit = raycaster.intersectObjects(surfaces, false);
+            return {
+                dist: +c.mesh.position.distanceTo(playerGroup.position).toFixed(1),
+                waypoint: `${c.index}/${c.path.length}`,
+                size: [box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z]
+                    .map(v => +v.toFixed(1)),
+                gap: hit.length ? +(box.min.y - hit[0].point.y).toFixed(2) : null
+            };
+        })
+    };
+};
+
+// Idle crowd behaviour: stroll to a point, pause, pick another. This is what
+// NPCs do whenever they aren't chasing the player.
+function updateWanderingNPC(npc, delta) {
+    if (npc.state === 'WAIT') {
+        npc.waitTimer -= delta;
+        if (npc.waitTimer <= 0) {
+            const newTarget = getAnywhereSpawnPoint(npc.mesh.position, 20, 100);
+            if (newTarget) npc.target = newTarget;
+            npc.state = 'WALK';
+            if (npc.currentAction !== npc.runAction) {
+                npc.runAction.reset().fadeIn(0.2).play();
+                if (npc.currentAction) npc.currentAction.fadeOut(0.2);
+                npc.currentAction = npc.runAction;
+            }
+        }
+        return;
+    }
+
+    const dist = npc.mesh.position.distanceTo(npc.target);
+    if (dist < 3.0) {
+        npc.state = 'WAIT';
+        npc.waitTimer = 2.0 + Math.random() * 3.0;
+        if (npc.currentAction !== npc.idleAction) {
+            npc.idleAction.reset().fadeIn(0.2).play();
+            if (npc.currentAction) npc.currentAction.fadeOut(0.2);
+            npc.currentAction = npc.idleAction;
+        }
+        return;
+    }
+
+    const dir = new THREE.Vector3().subVectors(npc.target, npc.mesh.position).normalize();
+    npc.mesh.position.addScaledVector(dir, NPC_WALK_SPEED * delta);
+    npc.mesh.lookAt(npc.target.x, npc.mesh.position.y, npc.target.z);
+
+    raycaster.set(
+        new THREE.Vector3(npc.mesh.position.x, npc.mesh.position.y + 10, npc.mesh.position.z),
+        downVector
+    );
+    const hits = raycaster.intersectObjects(colliderMeshes, false);
+    if (hits.length > 0) {
+        npc.mesh.position.y = THREE.MathUtils.lerp(npc.mesh.position.y, hits[0].point.y, 10 * delta);
+    }
+}
+
+// Applies one punch of damage to an NPC, and returns true if that killed it.
+// Kept separate from the punch handler so the hit feedback lives in one place.
+function damageNPC(npc, index) {
+    npc.health -= 1;
+    npc.hitFlash = 0.18;
+
+    // A small shove, so a hit reads as contact rather than clipping. Kept well
+    // under PLAYER_PUNCH_RANGE or it would knock them out of reach of the
+    // follow-up and every second punch would whiff.
+    const away = new THREE.Vector3().subVectors(npc.mesh.position, playerGroup.position);
+    away.y = 0;
+    if (away.lengthSq() > 1e-6) npc.mesh.position.addScaledVector(away.normalize(), 0.6);
+
+    if (npc.health > 0) {
+        // Being hit interrupts whatever they were doing and re-commits them.
+        npc.state = 'CHASE';
+        npc.punchTimer = Math.max(npc.punchTimer, 0.6);
+        npc.windup = -1;
+        return false;
+    }
+
+    scene.remove(npc.mesh);
+    roamingNPCs.splice(index, 1);
+    setTimeout(() => spawnRoamingNPC(), NPC_RESPAWN_DELAY);
+    return true;
+}
+
+// Damage to the player: armour soaks it first, which is what the tee and belt
+// pickups are for. Returns true if this was the punch that finished him.
+function damagePlayer(amount) {
+    if (playerHurtTimer > 0 || !gameActive) return false;
+    playerHurtTimer = PLAYER_HIT_INVULN;
+    playerHitFlash = 0.35;
+
+    if (armor > 0) {
+        armor = Math.max(0, armor - amount);
+        return false;
+    }
+
+    playerHealth -= amount;
+    if (playerHealth > 0) return false;
+
+    playerHealth = 0;
+    gameActive = false;
+    isBusted = true;
+    gameOverReason = 'busted';
+    if (currentAction) currentAction.stop();
+    return true;
 }
 
 function spawnPowerup() {
@@ -2452,6 +2885,7 @@ window.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowDown')  { e.preventDefault(); keys.s = true; }
     if (e.key === 'ArrowLeft')  { e.preventDefault(); keys.a = true; }
     if (e.key === 'ArrowRight') { e.preventDefault(); keys.d = true; }
+    if (k === 'f' || k === 'e') keys.punch = true;   // Circle on the pad
     if (k === 'p') isPaused = !isPaused;
     if (k === 'm') isMapOpen = !isMapOpen;
     if (k === 't') { isTimerRunning = !isTimerRunning; }
@@ -2460,6 +2894,7 @@ window.addEventListener('keydown', (e) => {
 window.addEventListener('keyup', (e) => {
     const k = e.key.toLowerCase();
     if (keys.hasOwnProperty(k)) keys[k] = false;
+    if (k === 'f' || k === 'e') keys.punch = false;
     if (k === ' ') {
         keys.space = false;
         jumpLocked = false;
@@ -2591,6 +3026,7 @@ function animate() {
             timeLeft = 0;
             gameActive = false;
             isBusted = false;
+            gameOverReason = 'time';
             if (currentAction) currentAction.stop();
         }
     }
@@ -2633,6 +3069,7 @@ function animate() {
                 if (distToPlayer < ENEMY_CATCH_RADIUS) {
                     gameActive = false;
                     isBusted = true;
+                    gameOverReason = 'busted';
                     if (currentAction) currentAction.stop();
                     if (enemy.actions['Hook'] && enemy.currentAction !== enemy.actions['Hook']) {
                         enemy.actions['Hook'].reset().play();
@@ -2688,52 +3125,103 @@ function animate() {
         });
     }
 
+    // TRAFFIC — runs while the game is live; cars top themselves up as they
+    // drive off the end of their route or out of range.
+    if (gameActive) {
+        updateTraffic(delta);
+        carSpawnTimer += delta;
+        if (carSpawnTimer > CAR_SPAWN_RATE) {
+            carSpawnTimer = 0;
+            spawnCar();
+        }
+    }
+
     // ROAMING NPCs
     if (gameActive) {
-        roamingNPCs.forEach(npc => {
-            npc.mixer.update(delta);
+        playerPunchTimer = Math.max(0, playerPunchTimer - delta);
+        playerHurtTimer  = Math.max(0, playerHurtTimer - delta);
+        playerHitFlash   = Math.max(0, playerHitFlash - delta);
 
-            if (npc.state === 'WAIT') {
-                npc.waitTimer -= delta;
-                if (npc.waitTimer <= 0) {
-                    const newTarget = getAnywhereSpawnPoint(npc.mesh.position, 20, 100);
-                    if (newTarget) npc.target = newTarget;
-                    npc.state = 'WALK';
+        // Iterated backwards: damageNPC() splices the dead out of the array.
+        for (let i = roamingNPCs.length - 1; i >= 0; i--) {
+            const npc = roamingNPCs[i];
+            npc.mixer.update(delta);
+            npc.punchTimer = Math.max(0, npc.punchTimer - delta);
+
+            // Red tint while a hit is registering, then back to their own colour.
+            if (npc.hitFlash > 0) {
+                npc.hitFlash -= delta;
+                const lit = npc.hitFlash > 0;
+                npc.mesh.traverse(o => {
+                    if (!o.isMesh || !o.material || !o.material.emissive) return;
+                    if (lit) o.material.emissive.setRGB(0.6, 0, 0);
+                    else o.material.emissive.setRGB(0, 0, 0);
+                });
+            }
+
+            const toPlayer = new THREE.Vector3().subVectors(playerGroup.position, npc.mesh.position);
+            toPlayer.y = 0;
+            const playerDist = toPlayer.length();
+
+            // A bike outruns them, so they don't bother giving chase.
+            const canAggro = !hasBike;
+            if (npc.state !== 'CHASE' && canAggro && playerDist < NPC_AGGRO_RADIUS) {
+                npc.state = 'CHASE';
+            } else if (npc.state === 'CHASE' && (!canAggro || playerDist > NPC_LOSE_RADIUS)) {
+                npc.state = 'WAIT';
+                npc.waitTimer = 0.5;
+                npc.windup = -1;
+            }
+
+            if (npc.state === 'CHASE') {
+                npc.mesh.lookAt(playerGroup.position.x, npc.mesh.position.y, playerGroup.position.z);
+
+                // A punch already thrown lands (or misses) on its own schedule,
+                // so the animation and the damage stay in step.
+                if (npc.windup >= 0) {
+                    npc.windup -= delta;
+                    if (npc.windup <= 0) {
+                        npc.windup = -1;
+                        if (playerDist < NPC_PUNCH_RANGE * 1.3) damagePlayer(1);
+                    }
+                } else if (playerDist > NPC_PUNCH_RANGE) {
+                    npc.mesh.position.addScaledVector(
+                        toPlayer.normalize(), NPC_CHASE_SPEED * delta
+                    );
                     if (npc.currentAction !== npc.runAction) {
                         npc.runAction.reset().fadeIn(0.2).play();
                         if (npc.currentAction) npc.currentAction.fadeOut(0.2);
                         npc.currentAction = npc.runAction;
                     }
-                }
-                return;
-            }
-
-            const dist = npc.mesh.position.distanceTo(npc.target);
-            if (dist < 3.0) {
-                npc.state = 'WAIT';
-                npc.waitTimer = 2.0 + Math.random() * 3.0;
-                if (npc.currentAction !== npc.idleAction) {
+                } else if (npc.punchTimer <= 0) {
+                    npc.punchTimer = NPC_PUNCH_COOLDOWN;
+                    npc.windup = NPC_PUNCH_WINDUP;
+                    if (npc.punchAction) {
+                        npc.punchAction.reset().fadeIn(0.05).play();
+                        if (npc.currentAction && npc.currentAction !== npc.punchAction) {
+                            npc.currentAction.fadeOut(0.05);
+                        }
+                        npc.currentAction = npc.punchAction;
+                    }
+                } else if (npc.currentAction !== npc.idleAction && !npc.punchAction) {
                     npc.idleAction.reset().fadeIn(0.2).play();
                     if (npc.currentAction) npc.currentAction.fadeOut(0.2);
                     npc.currentAction = npc.idleAction;
                 }
-            } else {
-                // Walk toward target
-                const dir = new THREE.Vector3().subVectors(npc.target, npc.mesh.position).normalize();
-                npc.mesh.position.addScaledVector(dir, NPC_WALK_SPEED * delta);
-                npc.mesh.lookAt(npc.target.x, npc.mesh.position.y, npc.target.z);
 
-                // Ground snap
                 raycaster.set(
                     new THREE.Vector3(npc.mesh.position.x, npc.mesh.position.y + 10, npc.mesh.position.z),
                     downVector
                 );
-                const hits = raycaster.intersectObjects(colliderMeshes, false);
-                if (hits.length > 0) {
-                    npc.mesh.position.y = THREE.MathUtils.lerp(npc.mesh.position.y, hits[0].point.y, 10 * delta);
+                const groundHits = raycaster.intersectObjects(colliderMeshes, false);
+                if (groundHits.length > 0) {
+                    npc.mesh.position.y = THREE.MathUtils.lerp(npc.mesh.position.y, groundHits[0].point.y, 10 * delta);
                 }
+                continue;
             }
-        });
+
+            updateWanderingNPC(npc, delta);
+        }
     }
 
     if (gameActive) {
@@ -2822,29 +3310,28 @@ function animate() {
                 hasJumpBoost = false;
             }
 
-            // 2b. PUNCH
-            if (keys.punch && !hasBike) {
+            // 2b. PUNCH — takes NPC_MAX_HEALTH landed hits to drop someone, so
+            // the cooldown is what paces a fight rather than the clip length.
+            if (keys.punch && !hasBike && playerPunchTimer <= 0) {
+                playerPunchTimer = PLAYER_PUNCH_COOLDOWN;
+
                 const punchAnim = animationsMap.get('Punch');
-                if (punchAnim && currentAction !== punchAnim) {
+                if (punchAnim) {
                     punchAnim.clampWhenFinished = true;
                     punchAnim.reset().setLoop(THREE.LoopOnce).play();
-                    if (currentAction) currentAction.fadeOut(0.1);
+                    if (currentAction && currentAction !== punchAnim) currentAction.fadeOut(0.1);
                     currentAction = punchAnim;
+                }
 
-                    // Check for NPCs in punch range (3 units in front of player)
-                    const punchDir = new THREE.Vector3(Math.sin(cameraAngle), 0, Math.cos(cameraAngle));
-                    for (let i = roamingNPCs.length - 1; i >= 0; i--) {
-                        const npc = roamingNPCs[i];
-                        const toNPC = new THREE.Vector3().subVectors(npc.mesh.position, playerGroup.position);
-                        const dist = toNPC.length();
-                        const dot = toNPC.normalize().dot(punchDir);
-                        if (dist < 4.0 && dot > 0.4) {
-                            // NPC is in front and close — destroy it
-                            scene.remove(npc.mesh);
-                            roamingNPCs.splice(i, 1);
-                            // Spawn a replacement somewhere else
-                            setTimeout(() => spawnRoamingNPC(), 3000);
-                        }
+                // Everyone in front of the player and in reach takes one.
+                const punchDir = new THREE.Vector3(Math.sin(cameraAngle), 0, Math.cos(cameraAngle));
+                for (let i = roamingNPCs.length - 1; i >= 0; i--) {
+                    const npc = roamingNPCs[i];
+                    const toNPC = new THREE.Vector3().subVectors(npc.mesh.position, playerGroup.position);
+                    toNPC.y = 0;
+                    const dist = toNPC.length();
+                    if (dist < PLAYER_PUNCH_RANGE && toNPC.normalize().dot(punchDir) > PLAYER_PUNCH_ARC) {
+                        damageNPC(npc, i);
                     }
                 }
             }

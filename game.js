@@ -1456,10 +1456,61 @@ loader.load('liontee.glb', (gltf) => {
     });
 });
 
-loader.load('belt.glb', (gltf) => {
-    beltTemplate = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR, castShadow: false });
-    beltTemplate.scale.set(2.0, 2.0, 2.0);
+// --- BELT PICKUP (procedural) ---
+// Replaces belt.glb — 5MB, 40,000 triangles and a 2048px texture for what is
+// visually a strip bent into a ring. This builds that ring directly: an
+// open-ended cylinder with the texture wrapped once around so it meets itself
+// at the seam. ~100 triangles, one texture, no model file.
+const BELT_RADIUS = 1.0;
+const BELT_SEGMENTS = 48;
+
+new THREE.TextureLoader().load('belt_texture.png', (tex) => {
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.anisotropy = isIOS ? 1 : 4;
+
+    const imgW = tex.image.width, imgH = tex.image.height;   // 113 x 858
+    const circumference = 2 * Math.PI * BELT_RADIUS;
+
+    // The texture is portrait, so its LONG axis is the one that travels around
+    // the belt. Sizing the band from that ratio keeps the artwork undistorted
+    // whatever the radius.
+    const height = circumference * (imgW / imgH);
+
+    const geo = new THREE.CylinderGeometry(
+        BELT_RADIUS, BELT_RADIUS, height, BELT_SEGMENTS, 1, true /* openEnded */
+    );
+
+    // CylinderGeometry runs u around the circumference and v up the height,
+    // which is the opposite of how this texture is laid out. Swapping the UV
+    // components is more predictable than texture.rotation, which interacts
+    // badly with wrapping.
+    const uv = geo.attributes.uv;
+    for (let i = 0; i < uv.count; i++) {
+        const u = uv.getX(i), v = uv.getY(i);
+        uv.setXY(i, v, u);
+    }
+    uv.needsUpdate = true;
+
+    beltTemplate = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+        map: tex,
+        side: THREE.DoubleSide,  // the far inside of the band shows as it turns
+        alphaTest: 0.35,         // cutout, so depth stays correct while spinning
+        toneMapped: true
+    }));
+
+    console.log(`Belt: procedural ring r=${BELT_RADIUS} h=${height.toFixed(2)} from ${imgW}x${imgH} texture`);
 });
+
+window.mqBeltInfo = () => beltTemplate ? {
+    built: true,
+    tris: beltTemplate.geometry.index
+        ? beltTemplate.geometry.index.count / 3
+        : beltTemplate.geometry.attributes.position.count / 3,
+    height: +(beltTemplate.geometry.parameters.height).toFixed(2),
+    spawned: powerups.filter(p => p.userData.type === 'armor_belt').length
+} : { built: false };
 
 
 // --- 5. LOGIC & SPAWNING ---
@@ -2117,13 +2168,14 @@ function createPowerupGroup(type, pos) {
         
         if (beltTemplate) mesh = beltTemplate.clone();
         else {
-            // FALLBACK
+            // FALLBACK (texture still loading)
             mesh = new THREE.Mesh(new THREE.TorusGeometry(0.3,0.05), new THREE.MeshBasicMaterial({color: 0x8B4513}));
         }
-        
-        // Push the belt down slightly
-        mesh.position.y = -1.0; // Tweak as needed
-        
+
+        // The ring is centred on its own origin, so it sits level with the glow
+        // rather than needing the drop the old model did.
+        mesh.position.y = 0.0;
+
         group.add(mesh);
         group.userData = { type: 'armor_belt', active: true };
     }

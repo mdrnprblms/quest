@@ -70,7 +70,8 @@ const JOBS = [
     { file: 'customer.glb',   simplifyRatio: 0.5,  error: 0.01,  textureSize: 1024 },
     { file: 'police.glb',     simplifyRatio: 0.08, error: 0.02,  textureSize: 1024 },
     { file: 'liontee.glb',    simplifyRatio: 0.05, error: 0.02,  textureSize: 1024 },
-    { file: 'belt.glb',       simplifyRatio: 0.4,  error: 0.02,  textureSize: 1024 },
+    // belt.glb is no longer loaded — the belt pickup is generated in game.js
+    // from belt_texture.png. The file can be deleted.
     { file: 'limebike.glb',   simplifyRatio: 0.4,  error: 0.02,  textureSize: 1024 },
     { file: 'playerbike.glb', simplifyRatio: 0.4,  error: 0.02,  textureSize: 1024 },
     { file: 'playermodel.glb',simplifyRatio: 0.6,  error: 0.02,  textureSize: 1024 },

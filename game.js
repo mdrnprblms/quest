@@ -7,8 +7,7 @@ import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 // --- POST-PROCESSING IMPORTS ---
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { BokehPass } from 'three/addons/postprocessing/BokehPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 
 // --- PHYSICS ACCELERATION ---
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
@@ -289,22 +288,6 @@ function initJoystick() {
 setTimeout(() => {
     initJoystick();
 
-    const btnPause = document.getElementById('btn-pause');
-    if (btnPause) {
-        btnPause.addEventListener('click', (e) => { 
-            e.preventDefault(); 
-            isPaused = !isPaused; 
-        });
-    }
-
-    const btnMap = document.getElementById('btn-map');
-    if (btnMap) {
-        btnMap.addEventListener('click', (e) => { 
-            e.preventDefault(); 
-            isMapOpen = !isMapOpen; 
-        });
-    }
-
     // --- CUSTOM ACTION BUTTONS (Touch & Mouse) ---
     function bindActionButton(buttonId, mappedKey) {
         const btn = document.getElementById(buttonId);
@@ -335,15 +318,17 @@ setTimeout(() => {
     }
 
     // --- CUSTOM MENU BUTTONS (Touch & Mouse) ---
-    function bindMenuButton(buttonId, targetElementId) {
+    // Takes the action directly rather than clicking a hidden HUD button — the
+    // on-screen MAP/PAUSE buttons these used to proxy no longer exist.
+    function bindMenuButton(buttonId, action) {
         const btn = document.getElementById(buttonId);
         if (!btn) return;
 
         const pressBtn = (e) => {
-            if (e.cancelable) e.preventDefault(); 
-            btn.style.opacity = '0'; 
-            if (navigator.vibrate) navigator.vibrate(20); 
-            document.getElementById(targetElementId).click(); 
+            if (e.cancelable) e.preventDefault();
+            btn.style.opacity = '0';
+            if (navigator.vibrate) navigator.vibrate(20);
+            action();
         };
 
         const releaseBtn = (e) => {
@@ -361,9 +346,9 @@ setTimeout(() => {
         btn.addEventListener('mouseleave', releaseBtn);
     }
 
-    // Bind Select to Map, and Start to Pause
-    bindMenuButton('btn-triangle', 'btn-map');
-    bindMenuButton('btn-start', 'btn-pause');
+    // Bind Triangle to Map, and Start to Pause
+    bindMenuButton('btn-triangle', () => window.toggleMap());
+    bindMenuButton('btn-start', () => window.togglePause());
 
     // Map your buttons to keyboard keys here!
     bindActionButton('btn-x', 'space'); // X = Jump
@@ -431,6 +416,13 @@ let isBusted = false;
 // Which end-of-run screen to show: 'time' | 'busted' | 'runover'.
 let gameOverReason = 'time';
 
+// Single entry point for both toggles, shared by the keyboard (M/P), the
+// on-screen controller and the pause menu. They used to be reached by
+// synthesising a click on the MAP/PAUSE HUD buttons, which the tidied HUD no
+// longer has.
+window.togglePause = () => { isPaused = !isPaused; };
+window.toggleMap   = () => { isMapOpen = !isMapOpen; };
+
 // PHYSICS STATE
 let verticalVelocity = 0;
 let isGrounded = true;
@@ -482,38 +474,65 @@ let activeEnemies = [];
 let currentMapName = 'shoreditch.glb'; 
 
 // UI HELPERS
+// The HUD is one bar with no labels on it, so each value has to carry its own
+// meaning: position for the score, a clock format for the time, a bar for
+// health, and coloured pips for the two temporary states. Every write below is
+// guarded against being redundant — updateUI runs every frame and setting
+// .textContent on an unchanged node still costs a style recalc.
+let _hudCache = { score: -1, armor: -1, stars: '', clock: '', danger: null, bike: null, drink: null };
+
 function updateUI() {
-    const uiScore = document.getElementById('score');
-    const uiTimer = document.getElementById('timer');
-    const uiPause = document.getElementById('pause-screen'); 
+    const uiPause = document.getElementById('pause-screen');
     const uiGameOver = document.getElementById('game-over');
-    const uiDrink = document.getElementById('status-drink');
-    const uiBike = document.getElementById('status-bike');
-    const uiDrinkTimer = document.getElementById('drink-timer');
-    
+
     const warningUI = document.getElementById('zone-warning');
     if (warningUI) warningUI.style.display = 'none';
 
-    if(uiScore) {
-        let status = "WALKING";
-        if (hasBike && hasJumpBoost) status = "STACKING IT"; 
-        else if (hasBike) status = "ON BIKE";
-        else if (hasJumpBoost) status = "BOOST READY";
-        
-        let wantedStars = "";
-        if (score >= WANTED_LEVEL_2_SCORE) wantedStars = "★★";
-        else if (score >= WANTED_LEVEL_1_SCORE) wantedStars = "★";
-        
-        uiScore.innerText = `${score} | 🛡️ ${armor} ${wantedStars}`;
+    const hudScore = document.getElementById('hud-score');
+    if (hudScore && score !== _hudCache.score) {
+        // Zero-padded so the bar doesn't reflow when the count reaches ten.
+        hudScore.textContent = String(score).padStart(2, '0');
+        _hudCache.score = score;
     }
 
-    if(uiTimer) {
-        uiTimer.innerText = timeLeft.toFixed(1);
-        uiTimer.className = timeLeft < 10 ? "danger" : "highlight";
+    const hudArmor = document.getElementById('hud-armor');
+    if (hudArmor && armor !== _hudCache.armor) {
+        hudArmor.textContent = `◆ ${armor}`;
+        hudArmor.style.display = armor > 0 ? 'inline' : 'none';
+        _hudCache.armor = armor;
     }
 
-    const healthFill = document.getElementById('health-fill');
-    const healthCount = document.getElementById('health-count');
+    const hudStars = document.getElementById('hud-stars');
+    if (hudStars) {
+        const stars = score >= WANTED_LEVEL_2_SCORE ? '★★'
+                    : score >= WANTED_LEVEL_1_SCORE ? '★'
+                    : '';
+        if (stars !== _hudCache.stars) {
+            hudStars.textContent = stars;
+            _hudCache.stars = stars;
+        }
+    }
+
+    const hudTimer = document.getElementById('hud-timer');
+    if (hudTimer) {
+        const t = Math.max(0, timeLeft);
+        // M:SS reads faster than a ticking decimal, and the last ten seconds
+        // switch to tenths because at that point the tenths are the tension.
+        const clock = t < 10
+            ? t.toFixed(1)
+            : `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+        if (clock !== _hudCache.clock) {
+            hudTimer.textContent = clock;
+            _hudCache.clock = clock;
+        }
+        const danger = t < 10;
+        if (danger !== _hudCache.danger) {
+            hudTimer.className = danger ? 'danger' : '';
+            _hudCache.danger = danger;
+        }
+    }
+
+    const healthFill = document.getElementById('hud-health-fill');
     if (healthFill) {
         const frac = Math.max(0, playerHealth) / PLAYER_MAX_HEALTH;
         healthFill.style.width = (frac * 100).toFixed(1) + '%';
@@ -522,22 +541,20 @@ function updateUI() {
         healthFill.style.backgroundColor = playerHitFlash > 0 ? '#ffffff'
             : frac > 0.5 ? '#32CD32' : frac > 0.25 ? '#FFD700' : '#FF3B30';
     }
-    if (healthCount) healthCount.innerText = armor > 0
-        ? `${Math.max(0, playerHealth)} +${armor}🛡️`
-        : `${Math.max(0, playerHealth)}`;
-    
-    if (uiDrink && uiBike) {
-        if (hasBike) uiBike.style.display = 'block';
-        else uiBike.style.display = 'none';
 
-        if (hasJumpBoost) {
-            uiDrink.style.display = 'block';
-            uiDrinkTimer.innerText = 'READY ■';
-        } else {
-            uiDrink.style.display = 'none';
-        }
+    const pipBike = document.getElementById('hud-pip-bike');
+    const pipDrink = document.getElementById('hud-pip-drink');
+    if (pipBike && hasBike !== _hudCache.bike) {
+        pipBike.style.display = hasBike ? 'block' : 'none';
+        _hudCache.bike = hasBike;
     }
-    
+    if (pipDrink && hasJumpBoost !== _hudCache.drink) {
+        pipDrink.style.display = hasJumpBoost ? 'block' : 'none';
+        _hudCache.drink = hasJumpBoost;
+    }
+    const statusSep = document.getElementById('hud-status-sep');
+    if (statusSep) statusSep.style.display = (hasBike || hasJumpBoost) ? 'block' : 'none';
+
     if(uiPause) uiPause.style.display = isPaused ? "flex" : "none";
     
     // --- REPLACE WITH THIS ---
@@ -622,8 +639,9 @@ renderer.setPixelRatio(targetPixelRatio());
 // we were paying full price for something effectively invisible.
 renderer.shadowMap.enabled = !isIOS;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.useLegacyLights = false;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
+// Tone mapping is set below, once we know whether the grade pass came up — it
+// does the mapping itself. (The old `useLegacyLights = false` line was dropped:
+// it has been the default since r155 and now only prints a deprecation warning.)
 renderer.toneMappingExposure = 1.0;
 document.body.appendChild(renderer.domElement);
 
@@ -805,22 +823,151 @@ function textureBytes() {
 }
 window.mqTextureBytes = textureBytes;
 
-// --- POST-PROCESSING SETUP (BOKEH) — skipped on iOS to save memory ---
+// --- POST-PROCESSING: CINEMATIC GRADE ---------------------------------------
+// What made the game read as flat was never the geometry — it was that the
+// image went straight from the renderer to the screen with no camera response
+// in between. The city ships as unlit photogrammetry, so nothing in the scene
+// produces highlight roll-off, lens falloff or grain; every pixel is exactly
+// the albedo that was painted into the texture.
+//
+// This is one fullscreen pass that fakes a physical camera:
+//   exposure -> ACES filmic roll-off -> saturation -> S-curve contrast ->
+//   split tone (cool shadows / warm highlights) -> vignette -> grain -> sRGB.
+//
+// It REPLACES the old RenderPass -> BokehPass -> OutputPass chain, so desktop
+// now runs three fullscreen passes fewer than before and is faster despite
+// looking better. The bokeh was set to aperture 0.00002 / maxblur 0.01, which
+// is visually indistinguishable from off, and it cost a full extra pass with a
+// depth prepass behind it.
+//
+// Tone mapping and the sRGB transfer function are folded into this same shader
+// rather than added as a separate OutputPass — that is the whole reason it can
+// afford to run on iOS, where previously there was no post at all.
+const GradeShader = {
+    uniforms: {
+        tDiffuse:    { value: null },
+        uExposure:   { value: 1.06 },
+        uContrast:   { value: 1.14 },
+        uSaturation: { value: 1.16 },
+        uShadowTint: { value: new THREE.Vector3(0.90, 0.96, 1.10) },
+        uHighTint:   { value: new THREE.Vector3(1.06, 1.01, 0.94) },
+        uVignette:   { value: 0.38 },
+        uGrain:      { value: 0.030 },
+        uGlare:      { value: 0.22 },
+        uAberration: { value: 0.55 },
+        uTime:       { value: 0 }
+    },
+
+    vertexShader: /* glsl */`
+        varying vec2 vUv;
+        void main() {
+            vUv = uv;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+    `,
+
+    fragmentShader: /* glsl */`
+        uniform sampler2D tDiffuse;
+        uniform float uExposure, uContrast, uSaturation;
+        uniform float uVignette, uGrain, uGlare, uAberration, uTime;
+        uniform vec3  uShadowTint, uHighTint;
+        varying vec2 vUv;
+
+        const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+
+        // Narkowicz's ACES curve fit. Cheaper than the full RRT/ODT that
+        // THREE.ACESFilmicToneMapping runs and close enough at this exposure.
+        vec3 aces(vec3 x) {
+            return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+        }
+
+        float hash(vec2 p) {
+            return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+        }
+
+        void main() {
+            vec2 c = vUv - 0.5;
+            float r = length(c);
+
+            #ifdef USE_ABERRATION
+                // Lateral chromatic aberration. A real lens focuses wavelengths
+                // at slightly different scales and the error grows with the
+                // square of the distance from the optical axis, so the centre of
+                // the frame stays clean and only the edges fringe.
+                vec2 off = c * r * r * uAberration * 0.006;
+                vec3 color = vec3(
+                    texture2D(tDiffuse, vUv + off).r,
+                    texture2D(tDiffuse, vUv).g,
+                    texture2D(tDiffuse, vUv - off).b
+                );
+            #else
+                vec3 color = texture2D(tDiffuse, vUv).rgb;
+            #endif
+
+            #ifdef USE_GLARE
+                // Four wide taps standing in for a bloom blur. Only the part of
+                // each sample above the highlight threshold is scattered back,
+                // which is what a bright sky does through real glass — for four
+                // extra fetches instead of the six passes a separable blur costs.
+                vec3 g = texture2D(tDiffuse, vUv + vec2( 0.016,  0.009)).rgb
+                       + texture2D(tDiffuse, vUv + vec2(-0.016,  0.009)).rgb
+                       + texture2D(tDiffuse, vUv + vec2( 0.009, -0.016)).rgb
+                       + texture2D(tDiffuse, vUv + vec2(-0.009, -0.016)).rgb;
+                color += uGlare * max(g * 0.25 - 0.72, 0.0);
+            #endif
+
+            color = aces(color * uExposure);
+
+            float l = dot(color, LUMA);
+            color = mix(vec3(l), color, uSaturation);
+            color = clamp((color - 0.5) * uContrast + 0.5, 0.0, 1.0);
+
+            // Shadows toward sky-blue, highlights toward sunlight. Separating
+            // the two ends of the range is most of what makes a graded frame
+            // look like it was shot rather than rendered.
+            color *= mix(uShadowTint, uHighTint, smoothstep(0.0, 0.85, l));
+
+            color *= 1.0 - uVignette * smoothstep(0.22, 0.78, r);
+
+            // Grain, held back in the highlights where real film has least of it.
+            float n = hash(vUv * 2048.0 + fract(uTime) * 91.7);
+            color += (n - 0.5) * uGrain * (1.0 - l * 0.7);
+
+            color = clamp(color, 0.0, 1.0);
+            gl_FragColor = vec4(
+                mix(color * 12.92,
+                    1.055 * pow(color, vec3(0.41666)) - 0.055,
+                    step(vec3(0.0031308), color)),
+                1.0
+            );
+        }
+    `
+};
+
 let composer = null;
-let bokehPass = null;
-if (!isIOS) {
+let gradePass = null;
+try {
     composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene, camera));
 
-    bokehPass = new BokehPass(scene, camera, {
-        focus: 10.0,
-        aperture: 0.00002,
-        maxblur: 0.01,
-        width: window.innerWidth,
-        height: window.innerHeight
-    });
-    composer.addPass(bokehPass);
-    composer.addPass(new OutputPass());
+    gradePass = new ShaderPass(GradeShader);
+    // The two multi-tap effects are the only part with a real per-pixel cost.
+    // iOS runs the grade maths alone: one texture fetch, no extra bandwidth.
+    if (!isIOS) gradePass.material.defines = { USE_GLARE: '', USE_ABERRATION: '' };
+    composer.addPass(gradePass);
+
+    // The pass tone maps and encodes to sRGB itself. Leaving the renderer's own
+    // tone mapping on as well would apply the curve twice on the iOS fallback
+    // path below and crush every highlight.
+    renderer.toneMapping = THREE.NoToneMapping;
+} catch (e) {
+    // A half-float render target is the one thing here that can fail outright on
+    // an old GPU. Falling back to the renderer's own tone mapping loses the
+    // grade but keeps the game playable.
+    console.warn('Post-processing unavailable, falling back to direct render.', e);
+    composer = null;
+    gradePass = null;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
 }
 
 // --- DRACO LOADER SETUP (For your compressed Archway map) ---
@@ -839,40 +986,84 @@ ktx2Loader.setTranscoderPath('https://unpkg.com/three@0.160.0/examples/jsm/libs/
 ktx2Loader.detectSupport(renderer);
 
 // --- 3. LIGHTING ---
-// These now only light characters, pickups and police — the city is unlit (see
-// toUnlitCityMaterial). The old values totalled 4.0 units of flat ambient,
-// which existed to lift the photogrammetry and washed everything out with it.
-const hemiLight = new THREE.HemisphereLight(0x8899bb, 0x404040, 1.0);
+// These only light characters, pickups, cars and police — the city is unlit
+// (see toUnlitCityMaterial), so nothing here touches the 1.8M city triangles.
+//
+// The old rig was one steep, near-white key from (50, 200, 50) plus 1.5 units
+// of blue fill. Light coming from directly overhead puts the same value on
+// every surface that faces up and leaves no gradient across a face, which is
+// exactly what "flat" looks like on a character. This one is a three-point
+// setup in miniature: a warm key low enough to model form, a cool sky fill to
+// keep the shadow side alive rather than black, and almost no flat ambient.
+const hemiLight = new THREE.HemisphereLight(0xbcd6ff, 0x5a5348, 0.55);
 scene.add(hemiLight);
 
-const ambientLight = new THREE.AmbientLight(0xccccff, 0.5);
+const ambientLight = new THREE.AmbientLight(0xdfe9ff, 0.10);
 scene.add(ambientLight);
 
-const dirLight = new THREE.DirectionalLight(0xaaccff, 1.2);
-dirLight.position.set(50, 200, 50);
+const dirLight = new THREE.DirectionalLight(0xfff0d6, 2.6);
+dirLight.position.set(120, 130, 70);   // ~38° elevation: side light, not top light
 dirLight.castShadow = renderer.shadowMap.enabled;
 dirLight.shadow.mapSize.width = isIOS ? 512 : 1024;
 dirLight.shadow.mapSize.height = isIOS ? 512 : 1024;
-dirLight.shadow.bias = -0.0005;
-dirLight.shadow.camera.left = -300;
-dirLight.shadow.camera.right = 300;
-dirLight.shadow.camera.top = 300;
-dirLight.shadow.camera.bottom = -300;
+dirLight.shadow.bias = -0.0002;
+dirLight.shadow.normalBias = 0.03;
+// The old frustum was ±300 around the world origin and never moved, so once the
+// player rode away from spawn they were outside it and cast nothing at all.
+// It now follows the player (see updateSunRig), which lets it be small: ±70 at
+// 1024px is 0.14 world units per texel instead of 0.59, and the tighter frustum
+// culls most of the city out of the shadow pass, so it also renders faster.
+dirLight.shadow.camera.left = -70;
+dirLight.shadow.camera.right = 70;
+dirLight.shadow.camera.top = 70;
+dirLight.shadow.camera.bottom = -70;
+dirLight.shadow.camera.near = 1;
+dirLight.shadow.camera.far = 420;
 scene.add(dirLight);
+scene.add(dirLight.target);
+
+// Sun offset from the player, preserved from the authored direction above.
+const SUN_OFFSET = dirLight.position.clone().normalize().multiplyScalar(220);
+
+// Keeps the shadow frustum centred on the player. Cheap: two vector copies and
+// one matrix update per frame.
+function updateSunRig(focus) {
+    if (!focus) return;
+    dirLight.target.position.copy(focus);
+    dirLight.position.copy(focus).add(SUN_OFFSET);
+    dirLight.target.updateMatrixWorld();
+}
 
 // --- ENVIRONMENT ---
 function initEnvironment() {
     const texLoader = new THREE.TextureLoader();
     texLoader.load('textures/sky.jpg', (texture) => {
+        texture.mapping = THREE.EquirectangularReflectionMapping;
+        texture.colorSpace = THREE.SRGBColorSpace;
+
         const pmremGenerator = new THREE.PMREMGenerator(renderer);
         const envMap = pmremGenerator.fromEquirectangular(texture).texture;
-        scene.background = envMap; 
-        texture.dispose();
+
+        // The sky itself stays sharp as the background; the prefiltered version
+        // becomes the scene's image-based light. This is the single biggest
+        // realism win available here and it costs nothing per frame: every PBR
+        // surface — knight armour, car paint, the bike — now reflects an actual
+        // sky and picks up its colour gradient instead of being lit by three
+        // abstract lamps in a void. It is also what the car loader's "no
+        // environment map, so metal rendered black" workaround was fighting.
+        scene.background = texture;
+        scene.environment = envMap;
+
         pmremGenerator.dispose();
     });
 
-    const fogColor = 0x111122; 
-    scene.fog = new THREE.Fog(fogColor, 1500, 3000); 
+    // Aerial perspective. Distance haze is the strongest depth cue a flat
+    // photogrammetry city can be given, and on fogged materials it is free —
+    // it is already in every shader. The old fog was near-black navy starting
+    // at 1500 units, i.e. invisible during play and, where it did land, it
+    // darkened distance instead of lifting it the way real atmosphere does.
+    const fogColor = 0xb9c9d8;
+    scene.fog = new THREE.Fog(fogColor, 320, 2300);
 
     const floorGeo = new THREE.CircleGeometry(4000, 32);
     const floorMat = new THREE.MeshStandardMaterial({ 
@@ -888,7 +1079,125 @@ function initEnvironment() {
     scene.add(floor);
 }
 
-initEnvironment(); 
+initEnvironment();
+
+// --- CONTACT SHADOWS ---------------------------------------------------------
+// The city is MeshBasicMaterial, and a basic material cannot receive a shadow —
+// so no matter how good the shadow map gets, nothing the player, the police or
+// the traffic casts will ever land on the street. That is why everything looked
+// pasted on top of the photo rather than standing in it.
+//
+// A soft dark ellipse under each object fixes exactly that, and it is the same
+// trick shipped games used for years before shadow maps were affordable. Cost
+// is one 128px texture and a pool of quads that never grows.
+const CONTACT_SHADOW_POOL = 18;
+const contactShadows = [];
+let contactShadowGroup = null;
+
+function makeContactShadowTexture() {
+    const size = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+    // Not a linear ramp — real contact shadow falls off fast at the edge and is
+    // densest right under the object.
+    g.addColorStop(0.00, 'rgba(0,0,0,0.85)');
+    g.addColorStop(0.45, 'rgba(0,0,0,0.42)');
+    g.addColorStop(0.78, 'rgba(0,0,0,0.10)');
+    g.addColorStop(1.00, 'rgba(0,0,0,0.00)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, size, size);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+}
+
+function initContactShadows() {
+    contactShadowGroup = new THREE.Group();
+    const tex = makeContactShadowTexture();
+    const geo = new THREE.PlaneGeometry(1, 1);
+    for (let i = 0; i < CONTACT_SHADOW_POOL; i++) {
+        const mat = new THREE.MeshBasicMaterial({
+            map: tex,
+            transparent: true,
+            depthWrite: false,     // never occludes anything behind it
+            fog: false,            // it is a contact, not an object in the haze
+            opacity: 0
+        });
+        const quad = new THREE.Mesh(geo, mat);
+        quad.rotation.x = -Math.PI / 2;
+        quad.renderOrder = 2;
+        quad.visible = false;
+        quad.frustumCulled = false;
+        contactShadowGroup.add(quad);
+        contactShadows.push(quad);
+    }
+    scene.add(contactShadowGroup);
+}
+initContactShadows();
+
+// Last Y the player was actually standing on, so a jump lifts and fades the
+// shadow instead of dragging it up into the air with them.
+let playerGroundY = 0;
+
+const _shadowTargets = [];
+function addShadowTarget(x, y, z, sx, sz, alpha, rot) {
+    _shadowTargets.push({ x, y, z, sx, sz, alpha, rot: rot || 0 });
+}
+
+function updateContactShadows() {
+    if (!contactShadows.length) return;
+    _shadowTargets.length = 0;
+
+    if (playerGroup) {
+        const air = Math.max(0, playerGroup.position.y - playerGroundY);
+        // Airborne: the penumbra spreads and thins, the way it does when you
+        // lift an object off a surface. Past ~26 units up there is nothing left.
+        const spread = 1 + air * 0.035;
+        const s = (hasBike ? 4.0 : 2.8) * spread;
+        addShadowTarget(
+            playerGroup.position.x, playerGroundY, playerGroup.position.z,
+            s, hasBike ? s * 1.5 : s,
+            0.8 * Math.max(0, 1 - air / 26),
+            playerGroup.rotation.y
+        );
+    }
+
+    for (const e of activeEnemies) {
+        const o = e.mesh || e.groupRef;
+        if (!o) continue;
+        addShadowTarget(o.position.x, o.position.y, o.position.z, 3.0, 3.0, 0.65, 0);
+    }
+
+    // A car's mesh sits `lift` above the road surface (the two GLBs disagree on
+    // where their origin is), so subtract it to land back on the tarmac. The
+    // ellipse is stretched down the length of the car and yawed with it — a
+    // circle under a car reads as a puddle.
+    for (const car of cars) {
+        const o = car.mesh;
+        if (!o) continue;
+        addShadowTarget(
+            o.position.x, o.position.y - (car.lift || 0), o.position.z,
+            4.6, CAR_LENGTH * 1.15, 0.5, o.rotation.y
+        );
+    }
+
+    for (let i = 0; i < contactShadows.length; i++) {
+        const quad = contactShadows[i];
+        const t = _shadowTargets[i];
+        if (!t || t.alpha <= 0.01) { quad.visible = false; continue; }
+        quad.visible = true;
+        // 0.06 above the surface: enough to clear z-fighting on photogrammetry
+        // road geometry, small enough to still read as contact.
+        quad.position.set(t.x, t.y + 0.06, t.z);
+        quad.scale.set(t.sx, t.sz, 1);
+        // The quad is laid flat by rotation.x, so its own Z is the world's up
+        // axis and yaw has to be applied there.
+        quad.rotation.z = -t.rot;
+        quad.material.opacity = t.alpha;
+    }
+}
 
 // --- 4. ASSETS ---
 const loader = new GLTFLoader();
@@ -3648,6 +3957,9 @@ function animate() {
                 if (groundHits.length > 0) {
                     const hitY = groundHits[0].point.y;
                     const distToFloor = playerGroup.position.y - hitY;
+                    // Remembered even mid-jump: the contact shadow needs the
+                    // surface below the player, not the player's own height.
+                    playerGroundY = hitY;
                     if (distToFloor <= 0.3 && verticalVelocity <= 0) {
                         playerGroup.position.y = hitY;
                         verticalVelocity = 0;
@@ -3757,10 +4069,20 @@ function animate() {
         playerBikeMesh.visible = hasBike;
     }
     updateWornTee();
-    
-    // RENDER — composer on desktop, plain render on iOS
-    if (composer) composer.render();
-    else renderer.render(scene, camera);
+
+    // Sun frustum and contact shadows both key off the player's final position
+    // for this frame, so they run after all movement is resolved.
+    if (playerGroup) updateSunRig(playerGroup.position);
+    updateContactShadows();
+
+    // RENDER — one graded fullscreen pass on top of the scene, all platforms.
+    if (composer) {
+        // Grain has to move or it reads as dirt on the lens.
+        if (gradePass) gradePass.uniforms.uTime.value += delta;
+        composer.render();
+    } else {
+        renderer.render(scene, camera);
+    }
 }
 
 // CAMERA
@@ -3770,8 +4092,8 @@ function animate() {
      if (isMapOpen) {
          targetPos = playerGroup.position.clone().add(new THREE.Vector3(0, 200, 0)); 
         targetLook = playerGroup.position.clone();
-         targetFogNear = 150;
-         targetFogFar = 800;
+         targetFogNear = 260;
+         targetFogFar = 1500;
          beaconGroup.scale.set(4, 4, 4);
      } else {
         const offset = new THREE.Vector3(
@@ -3781,8 +4103,8 @@ function animate() {
         ).applyAxisAngle(new THREE.Vector3(0, 1, 0), cameraAngle);
          targetPos = playerGroup.position.clone().add(offset);
         targetLook = playerGroup.position.clone().add(new THREE.Vector3(0, 2, 0));
-        targetFogNear = 1500;
-         targetFogFar = 3000;
+        targetFogNear = 320;
+         targetFogFar = 2300;
          beaconGroup.scale.set(1, 1, 1);
      }
 
@@ -3792,12 +4114,6 @@ function animate() {
         
              scene.fog.near = THREE.MathUtils.lerp(scene.fog.near, targetFogNear, 0.05);
     scene.fog.far = THREE.MathUtils.lerp(scene.fog.far, targetFogFar, 0.05);
-
-    // UPDATE BOKEH FOCUS (Keep player sharp) — skipped on iOS
-    if (playerGroup && bokehPass) {
-        const distToCam = camera.position.distanceTo(playerGroup.position);
-        bokehPass.uniforms['focus'].value = distToCam;
-    }
  }
 
 animate();

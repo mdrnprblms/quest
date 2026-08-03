@@ -16,21 +16,7 @@
             src: url('./helveticabold.ttf') format('truetype');
         }
 
-        .hud-btn {
-            font-family: 'HelveticaBold', sans-serif;
-            background: rgba(0, 0, 0, 0.6);
-            color: white;
-            border: 2px solid #555;
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-size: 12px;
-            font-weight: bold;
-            cursor: pointer;
-            text-shadow: 1px 1px 3px #000;
-        }
-        .hud-btn:active { background: rgba(50, 50, 50, 0.8); }
-
-        html, body { 
+        html, body {
             font-family: 'HelveticaBold', sans-serif;
             margin: 0; 
             overflow: hidden; 
@@ -55,15 +41,101 @@
 
         canvas { display: block; }
 
-        #ui-container {
-            position: absolute;
-            top: 20px;
-            left: 20px;
-            color: white;
-            user-select: none;
+        /* --- HUD BAR ---------------------------------------------------------
+           One row across the top, values only. Everything that used to be a
+           word is now position, colour or shape: first slot is the delivery
+           count, centre is the clock, right is condition. The scrim is a
+           gradient rather than a filled bar so it disappears into the sky
+           instead of cutting a rectangle out of it.
+           Note: the local 'HelveticaBold' face is byte-identical to
+           blackletter.TTF, so this deliberately uses the system Helvetica. */
+        #hud {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 9px 14px 18px;
+            padding-top: max(9px, env(safe-area-inset-top));
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            font-weight: 700;
+            font-size: 12px;
+            line-height: 1;
+            letter-spacing: -0.05em;
+            text-transform: uppercase;
+            font-variant-numeric: tabular-nums;
+            font-feature-settings: "tnum" 1, "kern" 1;
+            color: #fff;
+            background: linear-gradient(180deg,
+                        rgba(0,0,0,0.60) 0%,
+                        rgba(0,0,0,0.34) 45%,
+                        rgba(0,0,0,0.00) 100%);
+            text-shadow: 0 1px 3px rgba(0,0,0,0.9);
             pointer-events: none;
-            text-shadow: 4px 4px 5px #000;
+            user-select: none;
             z-index: 100;
+        }
+
+        /* Three equal columns, not "left, stretchy middle, right" — otherwise
+           the clock sits at the centre of the leftover space rather than the
+           centre of the screen, and drifts every time the score or the wanted
+           stars change width. */
+        .hud-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex: 1 1 0;
+            min-width: 0;
+        }
+        .hud-group.center { justify-content: center; }
+        .hud-group.right  { justify-content: flex-end; }
+
+        .hud-sep {
+            width: 1px;
+            height: 10px;
+            background: rgba(255,255,255,0.30);
+        }
+
+        #hud-score { font-size: 15px; letter-spacing: -0.05em; }
+
+        #hud-armor { color: #cfe3ff; display: none; }
+        #hud-stars { color: #ffd400; letter-spacing: 0.02em; }
+
+        #hud-timer { font-size: 13px; color: #fff; }
+        #hud-timer.danger { color: #ff3b30; animation: hud-blink 0.6s steps(2, start) infinite; }
+        @keyframes hud-blink { 50% { opacity: 0.35; } }
+
+        #hud-health {
+            width: 68px;
+            height: 4px;
+            background: rgba(255,255,255,0.20);
+            box-shadow: inset 0 0 0 1px rgba(0,0,0,0.35);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        #hud-health-fill {
+            display: block;
+            height: 100%;
+            width: 100%;
+            background: #fff;
+            transition: width 0.15s linear, background-color 0.15s linear;
+        }
+
+        .hud-pip {
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: #fff;
+            display: none;
+            box-shadow: 0 0 6px currentColor;
+        }
+        #hud-pip-bike  { background: #32CD32; color: #32CD32; }
+        #hud-pip-drink { background: #00FFFF; color: #00FFFF; }
+
+        @media (max-width: 600px) {
+            #hud { font-size: 10px; gap: 7px; padding: 7px 10px 16px; }
+            #hud-score { font-size: 13px; }
+            #hud-timer { font-size: 11px; }
+            #hud-health { width: 52px; height: 3px; }
         }
 
         h1 {
@@ -132,14 +204,19 @@
             border-color: #00ff00; 
         }
 
+        /* Freed from the old top-left HUD container, so it can centre properly. */
         #game-over {
-            display: none; 
-            font-family: 'Medieval', serif; 
-            font-size: 80px; 
-            color: #ff3333; 
-            margin-top: 20px;
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            font-family: 'Medieval', serif;
+            font-size: 80px;
+            color: #ff3333;
             text-shadow: 4px 4px 5px #000;
+            z-index: 200;
+            pointer-events: none;
         }
+        #game-over button { pointer-events: auto; }
 
         /* --- ZONE WARNING --- */
         #zone-warning {
@@ -393,19 +470,13 @@
         }
     }, 5000);
 
-    // ---- On-screen viewer for the previous session's log ----
-    // Tap the small badge in the top-right to expand. Long-press to clear.
+    // ---- Viewer for the previous session's log ----
+    // No longer a permanent on-screen badge — it sat on top of the HUD. The log
+    // is still captured exactly as before; call window.mqShowCrashLog() from the
+    // console (or window.mqClearCrashLog()) to read it back.
     function buildViewer(){
         const arr = readLog();
         if (!arr.length) return;
-        const badge = document.createElement('div');
-        badge.textContent = '🐛 ' + arr.length;
-        badge.style.cssText = `
-        position:fixed; top:8px; right:8px; z-index:99999;
-        background:#000; color:#0f0; font:12px/1 monospace;
-        padding:6px 8px; border:1px solid #0f0; border-radius:4px;
-        pointer-events:auto;
-        `;
         const panel = document.createElement('pre');
         panel.style.cssText = `
         position:fixed; top:36px; right:8px; z-index:99999;
@@ -418,23 +489,15 @@
         panel.textContent = arr.map(e =>
         e.iso.slice(11,19) + ' ' + e.type + ' ' + JSON.stringify(e.data)
         ).join('\n');
-
-        let pressTimer;
-        badge.addEventListener('click', () => {
-        panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-        });
-        badge.addEventListener('touchstart', () => {
-        pressTimer = setTimeout(() => {
-            localStorage.removeItem(LOG_KEY);
-            badge.remove(); panel.remove();
-        }, 1500);
-        });
-        badge.addEventListener('touchend', () => clearTimeout(pressTimer));
+        // Tap the panel itself to dismiss it once it has been opened.
+        panel.addEventListener('click', () => { panel.style.display = 'none'; });
 
         document.addEventListener('DOMContentLoaded', () => {
-        document.body.appendChild(badge);
         document.body.appendChild(panel);
         });
+
+        window.mqShowCrashLog  = () => { panel.style.display = 'block'; return arr.length; };
+        window.mqClearCrashLog = () => { localStorage.removeItem(LOG_KEY); panel.remove(); };
     }
     buildViewer();
     })();
@@ -443,39 +506,27 @@
 </head>
 <body>
     
-    <div id="ui-container">
-        <p class="score-text" style="font-size: 20px; margin-bottom: 5px;">Deliveries: <span id="score" class="highlight">0</span></p>
-        <p class="score-text" style="font-size: 18px; margin-top: 0; opacity: 0.9;">Time Left: <span id="timer" class="highlight">60.0</span>s</p>
-
-        <div id="health-wrap" style="margin-top: 8px; width: 190px;">
-            <div style="display: flex; justify-content: space-between; font-family: 'HelveticaBold', sans-serif;
-                        font-size: 12px; color: #fff; text-shadow: 2px 2px 4px #000; margin-bottom: 3px;">
-                <span>HEALTH</span><span id="health-count">15</span>
-            </div>
-            <div id="health-track" style="height: 12px; background: rgba(0,0,0,0.55);
-                        border: 2px solid rgba(255,255,255,0.85); border-radius: 2px; overflow: hidden;">
-                <div id="health-fill" style="height: 100%; width: 100%; background: #32CD32;
-                            transition: width 0.15s linear, background-color 0.15s linear;"></div>
-            </div>
+    <div id="hud">
+        <div class="hud-group">
+            <span id="hud-score">00</span>
+            <span id="hud-armor">&#9670;&nbsp;0</span>
+            <span id="hud-stars"></span>
         </div>
 
-        <div id="status-panel" style="margin-top: 10px; font-family: 'HelveticaBold', sans-serif; font-size: 14px;">
-            <div id="status-bike" style="color: #32CD32; display: none; text-shadow: 2px 2px 4px #000;">
-                [ LIME BIKE ACTIVE ]
-            </div>
-            <div id="status-drink" style="color: #00FFFF; display: none; text-shadow: 2px 2px 4px #000;">
-                ENERGY: <span id="drink-timer">0.0</span>s
-            </div>
-        </div>
-        
-        <div style="margin-top: 15px; display: flex; gap: 10px; pointer-events: auto;">
-            <button id="btn-map" class="hud-btn">MAP (M)</button>
-            <button id="btn-pause" class="hud-btn">PAUSE (P)</button>
+        <div class="hud-group center">
+            <span id="hud-timer">3:00</span>
         </div>
 
-        <div id="game-over">SHIFT ENDED</div>
+        <div class="hud-group right">
+            <div id="hud-health"><i id="hud-health-fill"></i></div>
+            <div class="hud-sep" id="hud-status-sep" style="display:none;"></div>
+            <span class="hud-pip" id="hud-pip-bike"></span>
+            <span class="hud-pip" id="hud-pip-drink"></span>
+        </div>
     </div>
-    
+
+    <div id="game-over">SHIFT ENDED</div>
+
     <div id="zone-warning">⚠️ LEAVING SAFE ZONE ⚠️</div>
 
     <div id="controller-overlay">
@@ -496,7 +547,7 @@
     <div id="pause-screen">
         <div style="margin-bottom: 30px;">PAUSED</div>
 
-        <button class="debug-btn" onclick="document.getElementById('btn-pause').click()">RESUME GAME</button>
+        <button class="debug-btn" onclick="window.togglePause()">RESUME GAME</button>
         
         <button class="debug-btn" onclick="window.returnToMenu()">MAIN MENU</button>
         <button class="debug-btn" onclick="window.debugSpawn('bike')">SPAWN BIKE</button>

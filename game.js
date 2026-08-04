@@ -87,6 +87,7 @@ titleScreen.innerHTML = `
         <span><b>SPACE</b> Jump</span>
         <span><b>SHIFT</b> Super jump</span>
         <span><b>F</b> Punch</span>
+        <span><b>V</b> 1st person</span>
         <span><b>M</b> Map</span>
         <span><b>P</b> Pause</span>
         <span><b>DRAG</b> Look</span>
@@ -165,17 +166,26 @@ const PLAYER_HIT_INVULN      = 0.8; // brief grace after a hit, so a crowd can't
 // already snaps to road cells and returns waypoints carrying the road surface
 // height, so a car just walks that list. Being hit ends the run.
 const CAR_FILES        = ['honda_jazz_ps1.glb', 'volkswagen_golf_ps1.glb'];
-const MAX_CARS         = 16;
+// 160 rather than 16. The two car models are PS1-era (41KB and 95KB), so this
+// costs draw calls and a raycast each per frame, not geometry — but the spawn
+// ring and despawn distance have to grow with it or 160 cars pile into the same
+// few hundred metres of road and read as a car park rather than as traffic.
+const MAX_CARS         = 160;
 const CAR_SPEED_MIN    = 22;
 const CAR_SPEED_MAX    = 34;
 const CAR_SPAWN_MIN    = 140;   // spawn ring around the player, world units
-const CAR_SPAWN_MAX    = 420;
-const CAR_DESPAWN_DIST = 700;
+const CAR_SPAWN_MAX    = 1100;
+const CAR_DESPAWN_DIST = 1500;
 const CAR_HIT_RADIUS   = 4.5;
 const CAR_LENGTH       = 8.0;   // target size along the direction of travel
 const CAR_LANE_OFFSET  = 3.5;   // shifted off the road centreline, so both
                                 // directions aren't driving down the same line
-const CAR_SPAWN_RATE   = 0.5;   // seconds between attempts, until MAX_CARS
+// One attempt every 0.5s would take 80 seconds to refill 160 cars, so the
+// streets would be empty for most of a 3 minute shift. Several per attempt
+// instead; each one still has to find a valid road route, so this is an upper
+// bound rather than a guarantee.
+const CAR_SPAWN_RATE   = 0.25;  // seconds between attempts, until MAX_CARS
+const CAR_SPAWN_BURST  = 6;     // spawn attempts per tick
 const CAR_RAY_HEIGHT   = 10;    // how far above itself a car looks for the road
 // Vertical rate limits, in world units per second. Climb is the important one:
 // it's what stops a car riding up a scan artefact. At 30 units/s forward, 8/s
@@ -380,9 +390,11 @@ setTimeout(() => {
         btn.addEventListener('mouseleave', releaseBtn);
     }
 
-    // Bind Triangle to Map, and Start to Pause
+    // Bind Triangle to Map, Start to Pause, and Select to the view toggle —
+    // Select was the one button on the pad that did nothing.
     bindMenuButton('btn-triangle', () => window.toggleMap());
     bindMenuButton('btn-start', () => window.togglePause());
+    bindMenuButton('btn-select', () => window.toggleFirstPerson());
 
     // Map your buttons to keyboard keys here!
     bindActionButton('btn-x', 'space'); // X = Jump
@@ -461,6 +473,14 @@ let gameOverReason = 'time';
 // longer has.
 window.togglePause = () => { isPaused = !isPaused; };
 window.toggleMap   = () => { isMapOpen = !isMapOpen; };
+
+// FIRST PERSON
+// The knight stands ~3.9 units tall with his feet on playerGroup's origin, and
+// sits lower than he stands.
+const FPV_EYE_HEIGHT      = 3.5;
+const FPV_EYE_HEIGHT_BIKE = 3.2;
+let isFirstPerson = false;
+window.toggleFirstPerson = () => { isFirstPerson = !isFirstPerson; return isFirstPerson; };
 
 // PHYSICS STATE
 let verticalVelocity = 0;
@@ -2562,8 +2582,11 @@ function updatePlayerSkin() {
     footRig = dressRig(footRig, playerMesh);
     bikeRig = dressRig(bikeRig, bikeRider);
 
-    if (playerMesh)     playerMesh.visible     = !hasBike;
+    // In first person the camera sits inside the knight's head, so he comes off
+    // — but the bike he is sitting on stays, which is most of what sells it.
+    if (playerMesh)     playerMesh.visible     = !hasBike && !isFirstPerson;
     if (playerBikeMesh) playerBikeMesh.visible = hasBike;   // hides its children too
+    if (bikeRider)      bikeRider.visible      = !isFirstPerson;
 
     // A garment that replaces the whole knight takes the bare meshes off screen;
     // one that is only extra geometry leaves them showing underneath.
@@ -4006,6 +4029,7 @@ window.addEventListener('keydown', (e) => {
     if (k === 'shift') keys.superJump = true;
     if (k === 'p') isPaused = !isPaused;
     if (k === 'm') isMapOpen = !isMapOpen;
+    if (k === 'v') window.toggleFirstPerson();
     if (k === 't') { isTimerRunning = !isTimerRunning; }
     if (k === 'i') toggleStats();
 });
@@ -4251,7 +4275,7 @@ function animate() {
         carSpawnTimer += delta;
         if (carSpawnTimer > CAR_SPAWN_RATE) {
             carSpawnTimer = 0;
-            spawnCar();
+            for (let i = 0; i < CAR_SPAWN_BURST && cars.length < MAX_CARS; i++) spawnCar();
         }
     }
 
@@ -4728,11 +4752,26 @@ function animate() {
      let targetFogNear, targetFogFar;
 
      if (isMapOpen) {
-         targetPos = playerGroup.position.clone().add(new THREE.Vector3(0, 200, 0)); 
+         targetPos = playerGroup.position.clone().add(new THREE.Vector3(0, 200, 0));
         targetLook = playerGroup.position.clone();
          targetFogNear = currentLook.mapFogNear;
          targetFogFar = currentLook.mapFogFar;
          beaconGroup.scale.set(4, 4, 4);
+     } else if (isFirstPerson) {
+        // Eyes rather than shoulders. cameraAngle and cameraPitch already carry
+        // the drag-to-look input, so first person is the same rig with the arm
+        // length taken off — nothing else in the control scheme changes.
+        const eye = playerGroup.position.clone();
+        eye.y += hasBike ? FPV_EYE_HEIGHT_BIKE : FPV_EYE_HEIGHT;
+        targetPos = eye;
+        targetLook = eye.clone().add(new THREE.Vector3(
+            Math.sin(cameraAngle) * Math.cos(cameraPitch),
+            -Math.sin(cameraPitch),
+            Math.cos(cameraAngle) * Math.cos(cameraPitch)
+        ).multiplyScalar(20));
+        targetFogNear = currentLook.fogNear;
+        targetFogFar = currentLook.fogFar;
+        beaconGroup.scale.set(1, 1, 1);
      } else {
         const offset = new THREE.Vector3(
             0,
@@ -4746,8 +4785,15 @@ function animate() {
          beaconGroup.scale.set(1, 1, 1);
      }
 
-    camera.position.lerp(targetPos, 0.1);
-    currentLookAt.lerp(targetLook, 0.1);
+    if (isFirstPerson && !isMapOpen) {
+        // No smoothing from the eyes. The chase camera's lag is what gives it
+        // weight; the same lag on a head reads as seasickness.
+        camera.position.copy(targetPos);
+        currentLookAt.copy(targetLook);
+    } else {
+        camera.position.lerp(targetPos, 0.1);
+        currentLookAt.lerp(targetLook, 0.1);
+    }
     camera.lookAt(currentLookAt);
         
              scene.fog.near = THREE.MathUtils.lerp(scene.fog.near, targetFogNear, 0.05);

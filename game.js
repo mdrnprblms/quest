@@ -1091,7 +1091,9 @@ const LOOKS = {
             shadowTint:   [0.82, 1.00, 0.93],   // green-teal shadows
             highTint:     [1.06, 1.01, 0.88],   // warm street-lamp highlights
             lift:         [0.010, 0.022, 0.016], // faded green blacks
-            vignette: 0.44, grain: 0.045, glare: 0.30
+            // Grain was 0.045, which is film-stock heavy and read as a dirty
+            // screen over flat photogrammetry rather than as texture.
+            vignette: 0.44, grain: 0.014, glare: 0.30
         }
     },
     day: {
@@ -1109,7 +1111,7 @@ const LOOKS = {
             shadowTint:   [0.88, 1.00, 0.96],
             highTint:     [1.05, 1.01, 0.92],
             lift:         [0.004, 0.010, 0.007],
-            vignette: 0.38, grain: 0.030, glare: 0.22
+            vignette: 0.38, grain: 0.010, glare: 0.22
         }
     }
 };
@@ -1974,8 +1976,8 @@ window.mqPlayerInfo = () => {
         garments: GARMENT_TYPES.map(t => ({
             key: t.key,
             loaded: !!t.template,
-            onFoot: footRig && footRig.garments[t.key] ? footRig.garments[t.key].length : 0,
-            onBike: bikeRig && bikeRig.garments[t.key] ? bikeRig.garments[t.key].length : 0,
+            onFoot: !!(footRig && footRig.garments[t.key]),
+            onBike: !!(bikeRig && bikeRig.garments[t.key]),
             worn: t.worn()
         })),
         current: currentAction ? currentAction.getClip().name : null,
@@ -1987,6 +1989,32 @@ window.mqPlayerInfo = () => {
     };
 };
 // Test hook: armour normally only changes by collecting a pickup.
+// Confirms a garment is actually carrying its host's pose. Compares the two
+// bone arrays the sync copies between, so it cannot be fooled by picking up a
+// neighbouring skeleton the way an outside-in check can.
+window.mqGarmentCheck = () => {
+    const out = [];
+    for (const [name, rig] of [['foot', footRig], ['bike', bikeRig]]) {
+        if (!rig) { out.push({ rig: name, attached: false }); continue; }
+        for (const key in rig.garments) {
+            const g = rig.garments[key];
+            let q = 0, p = 0;
+            const n = Math.min(g.hostBones.length, g.garmentBones.length);
+            for (let i = 0; i < n; i++) {
+                q = Math.max(q, g.garmentBones[i].quaternion.angleTo(g.hostBones[i].quaternion));
+                p = Math.max(p, g.garmentBones[i].position.distanceTo(g.hostBones[i].position));
+            }
+            out.push({
+                rig: name, key, bones: n, visible: g.clone.visible,
+                maxBoneAngle: +q.toFixed(6), maxBonePos: +p.toFixed(6),
+                atHost: g.clone.position.distanceTo(rig.host.position) < 1e-6
+                     && Math.abs(g.clone.scale.x - rig.host.scale.x) < 1e-6
+            });
+        }
+    }
+    return out;
+};
+
 // mqDebugArmor(2) puts the t-shirt on, mqDebugArmor(1, 'belt') the belt,
 // mqDebugArmor(0) takes whichever off. Applies straight away rather than waiting
 // for the next frame, so it works from a paused game or a test harness.
@@ -2410,7 +2438,8 @@ const GARMENT_TYPES = [
     }
 ];
 
-let footRig = null;   // { base: SkinnedMesh[], garments: { key: SkinnedMesh[] } }
+// { host, base: SkinnedMesh[], garments: { key: { clone, hostBones, garmentBones } } }
+let footRig = null;
 let bikeRig = null;
 
 function loadGarment(type, i = 0) {
@@ -2434,62 +2463,79 @@ function loadGarment(type, i = 0) {
 for (const type of GARMENT_TYPES) loadGarment(type);
 
 /**
- * Lifts the skinned meshes out of `template` and hangs them on `host`'s
- * skeleton, returning { garment, base } — the meshes added, and the host's own
- * meshes that were there first.
+ * Adds a garment beside `host`, returning what syncGarment needs to keep it in
+ * the host's pose, plus the host's own meshes so they can be hidden underneath.
  *
- * Only works because the two exports share a skeleton with identical joint
- * ORDER: skin indices are positions in the bone array, so a rig with the same
- * names in a different order would deform into confetti. Check a new export
- * with `node tools/joint-diff.mjs ps1_psx_knight.glb your-model.glb` before
- * relying on it.
- *
- * The template's own bones are discarded — the host's drive everything. The
- * meshes are reparented to sit exactly where the host's skin sits in the
- * hierarchy, because a SkinnedMesh is still positioned by its own world matrix
- * and the bind matrix we borrow belongs to the host.
+ * Only works because the exports share identical joint ORDER — bones are copied
+ * across by index. Check a new export before relying on it:
+ *   node tools/joint-diff.mjs ps1_psx_knight.glb your-model.glb
  */
 function attachGarment(host, template, key) {
-    if (!host || !template) return null;
+    if (!host || !template || !host.parent) return null;
 
     let hostSkin = null;
     host.traverse(o => { if (!hostSkin && o.isSkinnedMesh) hostSkin = o; });
-    if (!hostSkin) return null;
-
-    // bikeRider is a SkeletonUtils.clone of playerMesh, so if the player was
-    // already dressed when the bike finished loading, the clone arrives wearing
-    // a copy of the garment, bound to the wrong skeleton. Those get dropped and
-    // replaced by a properly bound one.
-    //
-    // ONLY the same garment, though. Stripping every garment here is what made
-    // the player vanish: attaching the belt deleted the shirt that had been
-    // attached moments earlier, leaving the rig holding meshes that were no
-    // longer in the scene, while hidesBase still took the bare knight away.
-    const stale = [];
-    host.traverse(o => { if (o.isSkinnedMesh && o.userData.garmentKey === key) stale.push(o); });
-    for (const m of stale) if (m.parent) m.parent.remove(m);
-
-    // Anything already wearing a garment key belongs to another garment, not to
-    // the body underneath.
-    const base = [];
-    host.traverse(o => { if (o.isSkinnedMesh && !o.userData.garmentKey) base.push(o); });
+    if (!hostSkin || !hostSkin.skeleton) return null;
 
     const clone = SkeletonUtils.clone(template);
-    const garment = [];
-    clone.traverse(o => { if (o.isSkinnedMesh) garment.push(o); });
-    if (!garment.length) return null;
+    let garmentSkin = null;
+    const meshes = [];
+    clone.traverse(o => {
+        if (!o.isSkinnedMesh) return;
+        if (!garmentSkin) garmentSkin = o;
+        o.castShadow = false;
+        meshes.push(o);
+    });
+    if (!garmentSkin || !garmentSkin.skeleton) return null;
 
-    for (const m of garment) {
-        m.bind(hostSkin.skeleton, hostSkin.bindMatrix);
-        m.castShadow = false;
-        m.userData.garmentKey = key;
-        m.position.copy(hostSkin.position);
-        m.quaternion.copy(hostSkin.quaternion);
-        m.scale.copy(hostSkin.scale);
-        m.visible = false;
-        hostSkin.parent.add(m);   // out of the clone, into the host's hierarchy
+    // Sibling of the host, not a child of it. That also means bikeRider, which
+    // is a SkeletonUtils.clone of playerMesh, no longer drags copies of whatever
+    // the player was already wearing along with it.
+    clone.userData.garmentKey = key;
+    clone.visible = false;
+    host.parent.add(clone);
+
+    const base = [];
+    host.traverse(o => { if (o.isSkinnedMesh) base.push(o); });
+
+    return {
+        clone,
+        base,
+        hostBones: hostSkin.skeleton.bones,
+        garmentBones: garmentSkin.skeleton.bones
+    };
+}
+
+/**
+ * Copies the host's pose into a garment, bone by bone.
+ *
+ * The garment keeps its OWN skeleton and its own bind data, and this only
+ * copies local bone transforms across — which is what animation writes anyway.
+ * Binding the garment's meshes to the host's skeleton instead looked simpler
+ * and was wrong: these models do not share a bind pose. The base knight's
+ * inverse bind matrix for the hips is
+ *     100,0,0,0  0,100,0,0  0,0,100,0  0,-94.62,-0.30,1
+ * while both re-exports carry
+ *     100,0,0,0  0,0,-100,0  0,100,0,0  0,-0.946,-0.003,1
+ * — a quarter turn about X and a translation a hundred times smaller. Bone
+ * matrices are built as bone.matrixWorld * boneInverse, so lending the host's
+ * inverses to geometry authored against different ones put the belt through
+ * the floor and would have misplaced the shirt just as badly.
+ *
+ * Nothing can drift here: this is a copy every frame, not a second simulation.
+ */
+function syncGarment(rig, host) {
+    const a = rig.hostBones, b = rig.garmentBones;
+    const n = Math.min(a.length, b.length);
+    for (let i = 0; i < n; i++) {
+        b[i].position.copy(a[i].position);
+        b[i].quaternion.copy(a[i].quaternion);
+        b[i].scale.copy(a[i].scale);
     }
-    return { garment, base };
+    // And sit where the host sits — it turns to face where the player is going.
+    rig.clone.position.copy(host.position);
+    rig.clone.quaternion.copy(host.quaternion);
+    rig.clone.scale.copy(host.scale);
 }
 
 // Attaches whatever has loaded but is not on this host yet. Cheap to call every
@@ -2502,11 +2548,11 @@ function dressRig(rig, host) {
         if (rig && rig.garments[type.key]) continue;
         const attached = attachGarment(host, type.template, type.key);
         if (!attached) continue;
-        // Captured from whichever garment attaches first; both see the same
-        // bare meshes, since garments are excluded from the base list.
-        if (!rig) rig = { base: attached.base, garments: {} };
-        rig.garments[type.key] = attached.garment;
-        console.log(`Garment "${type.key}": ${attached.garment.length} mesh(es) on ${host.name || 'host'} skeleton`);
+        // Garments live beside the host, so every one of them sees the same
+        // bare meshes underneath whichever attaches first.
+        if (!rig) rig = { host, base: attached.base, garments: {} };
+        rig.garments[type.key] = attached;
+        console.log(`Garment "${type.key}": attached beside ${host.name || 'host'}`);
     }
     return rig;
 }
@@ -2526,21 +2572,24 @@ function updatePlayerSkin() {
         if (type.worn() && type.hidesBase) { hideBase = true; break; }
     }
 
-    // Everything else — facing, stride, the pedalling pose — comes from the host
-    // skeleton the garment is bound to, which is the whole point of doing it
-    // this way rather than animating a second model.
+    // Facing, stride and the pedalling pose all arrive by copying the host's
+    // bones, so a garment needs to know nothing about any of them.
     for (const rig of [footRig, bikeRig]) {
         if (!rig) continue;
         for (const m of rig.base) m.visible = !hideBase;
         for (const type of GARMENT_TYPES) {
-            const meshes = rig.garments[type.key];
-            if (meshes) for (const m of meshes) m.visible = type.worn();
+            const g = rig.garments[type.key];
+            if (!g) continue;
+            const show = type.worn() && rig.host.visible;
+            g.clone.visible = show;
+            // Only posed while it is on screen; a hidden garment costs nothing.
+            if (show) syncGarment(g, rig.host);
         }
     }
 
     // The stitched-on garment and a worn tee model answer the same question, so
     // only one of them may ever be on screen.
-    if (footRig && footRig.garments.tee) {
+    if (footRig && footRig.garments && footRig.garments.tee) {
         if (wornTeeInstance) wornTeeInstance.visible = false;
     } else {
         updateWornTee();

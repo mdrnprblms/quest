@@ -1115,9 +1115,10 @@ const LOOKS = {
             shadowTint:   [0.82, 1.00, 0.93],   // green-teal shadows
             highTint:     [1.06, 1.01, 0.88],   // warm street-lamp highlights
             lift:         [0.010, 0.022, 0.016], // faded green blacks
-            // Grain was 0.045, which is film-stock heavy and read as a dirty
-            // screen over flat photogrammetry rather than as texture.
-            vignette: 0.44, grain: 0.014, glare: 0.30
+            // Grain: 0.045 -> 0.014 -> 0.006. Film-stock levels read as a dirty
+            // screen over flat photogrammetry rather than as texture, and the
+            // night look shows it worst because the streets are mostly midtone.
+            vignette: 0.44, grain: 0.006, glare: 0.30
         }
     },
     day: {
@@ -1135,7 +1136,7 @@ const LOOKS = {
             shadowTint:   [0.88, 1.00, 0.96],
             highTint:     [1.05, 1.01, 0.92],
             lift:         [0.004, 0.010, 0.007],
-            vignette: 0.38, grain: 0.010, glare: 0.22
+            vignette: 0.38, grain: 0.004, glare: 0.22
         }
     }
 };

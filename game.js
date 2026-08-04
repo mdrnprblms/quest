@@ -217,6 +217,7 @@ window.resetGame = () => {
     armor = 0;
     armorTee = 0;
     armorBelt = 0;
+    teeVariant = 'lion';
     timeLeft = START_TIME;
     gameActive = true;
     isBusted = false;
@@ -455,6 +456,9 @@ let score = 0;
 let armor = 0;
 let armorTee = 0;
 let armorBelt = 0;
+// 'lion' | 'grey' — which shirt the last tee pickup was, so the knight wears the
+// one he actually collected.
+let teeVariant = 'lion';
 let timeLeft = START_TIME;
 let gameActive = false;
 let isPaused = false; 
@@ -2039,7 +2043,8 @@ window.mqGarmentCheck = () => {
 // mqDebugArmor(0) takes whichever off. Applies straight away rather than waiting
 // for the next frame, so it works from a paused game or a test harness.
 window.mqDebugArmor = (n, kind = 'tee') => {
-    if (kind === 'belt') armorBelt = n; else armorTee = n;
+    if (kind === 'belt') armorBelt = n;
+    else { armorTee = n; teeVariant = (kind === 'grey' || kind === 'teeGrey') ? 'grey' : 'lion'; }
     if (n === 0) { armorTee = 0; armorBelt = 0; }
     armor = armorTee + armorBelt;
     updatePlayerSkin();
@@ -2448,7 +2453,15 @@ const GARMENT_TYPES = [
             'knight with tee test.glb'   // raw sculpt export: 610k verts, 30.5MB
         ],
         hidesBase: true,
-        worn: () => armorTee > 0
+        worn: () => armorTee > 0 && teeVariant === 'lion'
+    },
+    {
+        // Same shirt in grey. Which one you are wearing is whichever you last
+        // picked up, so the two can never be on at once.
+        key: 'teeGrey',
+        files: ['knight_with_a_grey_tee.glb'],
+        hidesBase: true,
+        worn: () => armorTee > 0 && teeVariant === 'grey'
     },
     {
         key: 'belt',
@@ -2694,23 +2707,81 @@ loader.load('monster_zero_ultra.glb', (gltf) => {
     drinkTemplate.scale.set(0.6, 0.6, 0.6);
 });
 
+// The texture the grey shirt is made from. Its average colour is what the
+// floating pickup gets tinted with, so the two always agree without anyone
+// having to keep a hex value in sync by hand.
+const GREY_TEE_TEXTURE = 'grey tee test.jpg';
+
+/**
+ * Mean colour of an image, ignoring transparent pixels.
+ *
+ * Read at 32x32 rather than full size: the browser's own downscale is a box
+ * filter, which is the average — so this is the same answer for a thousandth of
+ * the work. Scaled so the brightest channel lands at 0.9, because the value is
+ * multiplied into an already-textured material and a raw mid-grey average comes
+ * out muddy; hue and saturation are untouched.
+ */
+function averageTextureColor(url) {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+            try {
+                const S = 32;
+                const canvas = document.createElement('canvas');
+                canvas.width = canvas.height = S;
+                const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                ctx.drawImage(img, 0, 0, S, S);
+                const d = ctx.getImageData(0, 0, S, S).data;
+                let r = 0, g = 0, b = 0, n = 0;
+                for (let i = 0; i < d.length; i += 4) {
+                    if (d[i + 3] < 8) continue;      // transparent
+                    r += d[i]; g += d[i + 1]; b += d[i + 2]; n++;
+                }
+                if (!n) return resolve(null);
+                r /= n * 255; g /= n * 255; b /= n * 255;
+                const peak = Math.max(r, g, b);
+                if (peak > 1e-3) { const k = 0.9 / peak; r *= k; g *= k; b *= k; }
+                const col = new THREE.Color();
+                col.setRGB(r, g, b, THREE.SRGBColorSpace);
+                resolve(col);
+            } catch (e) {
+                resolve(null);   // tainted canvas or a decode failure
+            }
+        };
+        img.onerror = () => resolve(null);
+        img.src = encodeURI(url);
+    });
+}
+
 loader.load('liontee.glb', (gltf) => {
     lionTeeTemplate = optimizeModel(gltf.scene, { cap: TEX_CAP_CHAR, castShadow: false });
     lionTeeTemplate.scale.set(2.5, 2.5, 2.5);
+
 
     // lionteegrey.glb is a byte-for-byte duplicate of liontee.glb (identical MD5),
     // so we build the grey variant off the same geometry and textures instead of
     // paying for a second 39MB download and a second 59MB texture upload.
     lionTeeGreyTemplate = lionTeeTemplate.clone();
+    const greyMats = [];
     lionTeeGreyTemplate.traverse(o => {
         if (!o.isMesh || !o.material) return;
         const mats = Array.isArray(o.material) ? o.material : [o.material];
         const greyed = mats.map(m => {
             const c = m.clone();            // clone shares the texture objects
-            if (c.color) c.color.set(0x8f8f8f);
+            if (c.color) { c.color.set(0x8f8f8f); greyMats.push(c); }
             return c;
         });
         o.material = Array.isArray(o.material) ? greyed : greyed[0];
+    });
+
+    // Take the pickup's colour from the shirt the player will actually end up
+    // wearing, rather than leaving it on a guessed grey. Object3D.clone() shares
+    // materials by reference, so this lands on pickups already floating in the
+    // world as well as ones spawned later.
+    averageTextureColor(GREY_TEE_TEXTURE).then(col => {
+        if (!col) return;
+        for (const m of greyMats) m.color.copy(col);
+        console.log(`Grey tee: pickup tinted from ${GREY_TEE_TEXTURE} -> #${col.getHexString()}`);
     });
 });
 
@@ -2802,6 +2873,16 @@ function calculateMovement(position, moveVec, speed, delta) {
     const PUSH_BACK = 0.05;     // Small push away from wall surface
     const heights = [0.3, 1.2, 2.2]; // Ankles, waist, shoulders
 
+    // Anything shorter than this gets climbed rather than collided with. The
+    // knight stands 3.93 units tall, and the ground snap below already lifts him
+    // onto whatever it finds within 3.0 of his feet — so this is the reach he
+    // actually has, and a step taller than it would strand him half way up.
+    //
+    // It matters because the photogrammetry is full of shin-high junk: kerbs,
+    // scan lumps, the flattened remains of parked cars. Being stopped dead by a
+    // bump you can see over is the thing that reads as broken.
+    const STEP_OVER_HEIGHT = 3.0;
+
     // Fan angles: forward + 22.5 + 45 degrees either side
     const fanAngles = [0, Math.PI / 8, -Math.PI / 8, Math.PI / 4, -Math.PI / 4];
 
@@ -2810,6 +2891,21 @@ function calculateMovement(position, moveVec, speed, delta) {
     const sideOffsets = [-0.4, 0, 0.4];
 
     const wallNormals = [];
+
+    // Is anything blocking at head height? If nothing is, whatever the lower
+    // rays found is short enough to walk up, and the wall normals they produced
+    // are thrown away below.
+    let blockedHigh = false;
+    {
+        const origin = position.clone();
+        origin.y += STEP_OVER_HEIGHT;
+        for (const angle of fanAngles) {
+            const dir = moveVec.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), angle).normalize();
+            raycaster.set(origin, dir);
+            const hits = raycaster.intersectObjects(colliderMeshes, false);
+            if (hits.length > 0 && hits[0].distance < PLAYER_RADIUS) { blockedHigh = true; break; }
+        }
+    }
 
     for (let h of heights) {
         const origin = position.clone();
@@ -2843,6 +2939,10 @@ function calculateMovement(position, moveVec, speed, delta) {
             }
         }
     }
+
+    // Nothing at head height means nothing here is a wall. Walk on and let the
+    // ground snap carry him up over it.
+    if (!blockedHigh) wallNormals.length = 0;
 
     // Apply all wall normals — each slides movement along that wall
     for (let normal of wallNormals) {
@@ -3971,7 +4071,9 @@ function createPowerupGroup(type, pos) {
         mesh.position.y = -2.5; // <--- Changed from -3.5 to -1.5
         
         group.add(mesh);
-        group.userData = { type: 'armor_tee', active: true };
+        // Remember which shirt this one is, so the model the player picks up is
+        // the model he ends up wearing.
+        group.userData = { type: 'armor_tee', variant: useGrey ? 'grey' : 'lion', active: true };
     }
     else if (type === 'armor_belt') { 
         let mesh;
@@ -4397,6 +4499,7 @@ function animate() {
                     hasJumpBoost = true;
                 } else if (p.userData.type === 'armor_tee') {
                     armorTee += 2;
+                    teeVariant = p.userData.variant === 'grey' ? 'grey' : 'lion';
                     armor = armorTee + armorBelt;
                 } else if (p.userData.type === 'armor_belt') {
                     armorBelt += 1;
